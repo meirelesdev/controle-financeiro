@@ -9,6 +9,7 @@ import {
 import { EXPENSE_CATEGORIES } from '../../domain/constants/Categories'
 import { formatCurrency, formatMonthYear, getCurrentYearMonth, formatMonthShort } from '../utils/formatters'
 import { renderMonthPicker } from '../components/MonthPicker'
+import { openTransactionModal } from '../components/TransactionModal'
 import Chart from 'chart.js/auto'
 
 let chartPie: Chart | null = null
@@ -30,11 +31,18 @@ export async function renderDashboard(
     const cards        = await cardRepo.getAll()
     const savings      = await savingsRepo.getAll()
 
-    const summary = computeMonthlySummary(monthTx)
-    const history = computeMonthlyHistory(transactions, 6)
+    const summary      = computeMonthlySummary(monthTx)
+    const history      = computeMonthlyHistory(transactions, 6)
     const totalSavings = savings.reduce((s, sv) => s + sv.balance, 0)
 
-    // Header
+    // Saldo acumulado real de TODAS as transações confirmadas
+    const allTimeBalance = transactions
+      .filter(t => t.status === 'confirmado' && t.type !== 'transfer')
+      .reduce((sum, t) => sum + (t.type === 'income' ? t.amount : -t.amount), 0)
+
+    const patrimonio = allTimeBalance + totalSavings
+
+    // ── Header ──────────────────────────────────────────────
     const header = document.createElement('div')
     header.className = 'flex items-center justify-between mb-4'
     header.innerHTML = `<h1 class="text-lg font-bold text-muted capitalize">Dashboard</h1>`
@@ -42,34 +50,76 @@ export async function renderDashboard(
     header.appendChild(picker)
     container.appendChild(header)
 
-    // Saldo cards
+    // ── Botões de lançamento rápido ──────────────────────────
+    const quickActions = document.createElement('div')
+    quickActions.className = 'grid grid-cols-2 gap-3 mb-4'
+    quickActions.innerHTML = `
+      <button id="btn-quick-income"
+        class="flex items-center justify-center gap-2 py-3.5 rounded-xl font-semibold text-sm
+               border border-primary text-income bg-bg-hover active:scale-95 transition-transform cursor-pointer">
+        <span class="text-lg leading-none">+</span> Receita
+      </button>
+      <button id="btn-quick-expense"
+        class="flex items-center justify-center gap-2 py-3.5 rounded-xl font-semibold text-sm
+               border border-danger text-expense bg-bg-hover active:scale-95 transition-transform cursor-pointer">
+        <span class="text-lg leading-none">+</span> Despesa
+      </button>
+    `
+    container.appendChild(quickActions)
+
+    document.getElementById('btn-quick-income')?.addEventListener('click', () =>
+      openTransactionModal(txRepo, cardRepo, render, { initialType: 'income' })
+    )
+    document.getElementById('btn-quick-expense')?.addEventListener('click', () =>
+      openTransactionModal(txRepo, cardRepo, render, { initialType: 'expense' })
+    )
+
+    // ── Cards de saldo ───────────────────────────────────────
     const grid = document.createElement('div')
     grid.className = 'grid grid-cols-2 gap-3 mb-4'
     grid.innerHTML = `
       <div class="summary-card col-span-2 bg-gradient-to-r from-bg-card to-bg-hover">
-        <div class="summary-label">Saldo Real (mês)</div>
-        <div class="summary-value ${summary.saldoReal >= 0 ? 'text-income' : 'text-expense'}">
-          ${formatCurrency(summary.saldoReal)}
+        <div class="summary-label">Patrimônio total</div>
+        <div class="summary-value ${patrimonio >= 0 ? 'text-income' : 'text-expense'}">
+          ${formatCurrency(patrimonio)}
         </div>
-        ${summary.pendingCount > 0 ? `
+        <div class="flex gap-4 mt-2 text-xs">
+          <div>
+            <span class="text-subtle">Disponível: </span>
+            <span class="${allTimeBalance >= 0 ? 'text-income' : 'text-expense'} font-medium">
+              ${formatCurrency(allTimeBalance)}
+            </span>
+          </div>
+          <div>
+            <span class="text-subtle">Cofrinhos: </span>
+            <span class="text-primary font-medium">${formatCurrency(totalSavings)}</span>
+          </div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Entradas (${formatMonthYear(year, month)})</div>
+        <div class="summary-value text-income">${formatCurrency(summary.totalIncome)}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Saídas (${formatMonthYear(year, month)})</div>
+        <div class="summary-value text-expense">${formatCurrency(summary.totalExpense)}</div>
+      </div>
+      ${summary.pendingCount > 0 ? `
+        <div class="summary-card col-span-2">
+          <div class="summary-label">Saldo do mês (confirmado)</div>
+          <div class="summary-value ${summary.saldoReal >= 0 ? 'text-income' : 'text-expense'}">
+            ${formatCurrency(summary.saldoReal)}
+          </div>
           <div class="text-xs text-subtle mt-1">
             Projetado: <span class="${summary.saldoProjetado >= 0 ? 'text-income' : 'text-expense'} font-medium">${formatCurrency(summary.saldoProjetado)}</span>
             <span class="badge-pending ml-1">${summary.pendingCount} pendentes</span>
           </div>
-        ` : ''}
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">Entradas</div>
-        <div class="summary-value text-income">${formatCurrency(summary.totalIncome)}</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">Saídas</div>
-        <div class="summary-value text-expense">${formatCurrency(summary.totalExpense)}</div>
-      </div>
+        </div>
+      ` : ''}
     `
     container.appendChild(grid)
 
-    // Gráfico pizza — gastos por categoria
+    // ── Gráfico pizza — gastos por categoria ─────────────────
     const hasExpenses = Object.keys(summary.byCategory).length > 0
     if (hasExpenses) {
       const catSection = document.createElement('div')
@@ -86,7 +136,7 @@ export async function renderDashboard(
         chartPie?.destroy()
         const labels = Object.keys(summary.byCategory).map(id => {
           const c = EXPENSE_CATEGORIES.find(e => e.id === id)
-          return `${c?.emoji ?? ''} ${c?.label ?? id}`
+          return `${c?.emoji ?? '📌'} ${c?.label ?? id}`
         })
         chartPie = new Chart(pieCtx, {
           type: 'doughnut',
@@ -110,7 +160,7 @@ export async function renderDashboard(
       }
     }
 
-    // Gráfico barras — histórico 6 meses
+    // ── Gráfico barras — histórico 6 meses ───────────────────
     const barSection = document.createElement('div')
     barSection.className = 'card mb-4'
     barSection.innerHTML = `
@@ -144,7 +194,7 @@ export async function renderDashboard(
       })
     }
 
-    // Resumo cartões
+    // ── Resumo cartões ───────────────────────────────────────
     if (cards.length > 0) {
       const cardSection = document.createElement('div')
       cardSection.className = 'mb-4'
@@ -172,7 +222,7 @@ export async function renderDashboard(
       container.appendChild(cardSection)
     }
 
-    // Cofrinhos resumo
+    // ── Cofrinhos resumo ─────────────────────────────────────
     if (savings.length > 0) {
       const savSection = document.createElement('div')
       savSection.className = 'mb-4'
