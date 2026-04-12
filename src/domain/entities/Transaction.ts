@@ -13,6 +13,8 @@ export interface Transaction {
   date: string          // YYYY-MM-DD
   paymentMethod: PaymentMethod
   cardId?: string       // preenchido quando paymentMethod === 'card'
+  /** Vincula parcelas de uma mesma compra parcelada */
+  installmentGroupId?: string
   createdAt: string     // ISO timestamp
   updatedAt: string     // ISO timestamp
 }

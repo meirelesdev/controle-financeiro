@@ -33,4 +33,9 @@ export class IdbTransactionRepository implements ITransactionRepository {
     const range = IDBKeyRange.bound(from, to)
     return this.db.getAllFromIndex('transactions', 'by-date', range)
   }
+
+  async getByInstallmentGroup(groupId: string): Promise<Transaction[]> {
+    const all = await this.db.getAll('transactions')
+    return all.filter(t => t.installmentGroupId === groupId)
+  }
 }

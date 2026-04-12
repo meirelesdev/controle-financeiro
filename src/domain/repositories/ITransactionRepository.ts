@@ -7,4 +7,5 @@ export interface ITransactionRepository {
   getById(id: string): Promise<Transaction | undefined>
   getAll(): Promise<Transaction[]>
   getByMonth(year: number, month: number): Promise<Transaction[]>
+  getByInstallmentGroup(groupId: string): Promise<Transaction[]>
 }

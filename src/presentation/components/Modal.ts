@@ -3,6 +3,8 @@ export interface ModalOptions {
   content: string  // HTML
   /** Retorne `false` para impedir que o modal feche (ex: erro de validação). */
   onConfirm?: () => void | false | Promise<void | false>
+  /** Chamado quando o botão de cancelar é clicado (antes de fechar). */
+  onCancel?: () => void
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
@@ -43,7 +45,10 @@ export function openModal(options: ModalOptions): void {
     if (e.target === overlay) closeModal()
   })
 
-  sheet.querySelector('#modal-cancel')?.addEventListener('click', closeModal)
+  sheet.querySelector('#modal-cancel')?.addEventListener('click', () => {
+    if (options.onCancel) options.onCancel()
+    closeModal()
+  })
 
   if (options.onConfirm) {
     sheet.querySelector('#modal-confirm')?.addEventListener('click', async () => {

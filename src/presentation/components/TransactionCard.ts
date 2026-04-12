@@ -1,10 +1,11 @@
 import type { Transaction } from '../../domain/entities/Transaction'
 import { getCategoryById } from '../../domain/constants/Categories'
 import { formatCurrency, formatShortDate } from '../utils/formatters'
+import { openModal } from './Modal'
 
 export function renderTransactionCard(
   t: Transaction,
-  onDelete: (id: string) => void,
+  onDelete: (id: string, deleteGroup: boolean) => void,
   onEdit: (t: Transaction) => void
 ): HTMLElement {
   const cat   = getCategoryById(t.category)
@@ -21,6 +22,10 @@ export function renderTransactionCard(
     ? '<span class="badge-pending ml-1">pendente</span>'
     : ''
 
+  const installmentBadge = t.installmentGroupId
+    ? '<span class="badge-pending ml-1" style="background:rgba(100,116,139,.25);color:#94a3b8">parcelado</span>'
+    : ''
+
   const el = document.createElement('div')
   el.className = 'card-sm flex items-center gap-3 mb-2'
   el.innerHTML = `
@@ -30,7 +35,7 @@ export function renderTransactionCard(
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-1 flex-wrap">
         <span class="text-sm font-medium text-muted truncate">${t.description}</span>
-        ${statusBadge}
+        ${statusBadge}${installmentBadge}
       </div>
       <div class="text-xs text-subtle">${label} · ${formatShortDate(t.date)}</div>
     </div>
@@ -43,8 +48,26 @@ export function renderTransactionCard(
     </div>
   `
 
-  el.querySelector('[data-delete]')?.addEventListener('click', () => onDelete(t.id))
-  el.querySelector('[data-edit]')?.addEventListener('click',   () => onEdit(t))
+  el.querySelector('[data-delete]')?.addEventListener('click', () => {
+    if (t.installmentGroupId) {
+      openModal({
+        title: 'Excluir parcela',
+        content: `
+          <p class="text-sm text-subtle mb-2">Esta transação faz parte de uma compra parcelada.</p>
+          <p class="text-sm text-muted font-medium">Deseja excluir apenas esta parcela ou esta e todas as próximas?</p>
+        `,
+        confirmLabel: 'Esta e as próximas',
+        cancelLabel: 'Só esta parcela',
+        danger: true,
+        onConfirm: () => { onDelete(t.id, true) },
+        onCancel:  () => { onDelete(t.id, false) },
+      })
+    } else {
+      onDelete(t.id, false)
+    }
+  })
+
+  el.querySelector('[data-edit]')?.addEventListener('click', () => onEdit(t))
 
   return el
 }

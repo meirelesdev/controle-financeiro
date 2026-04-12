@@ -24,10 +24,25 @@ export interface ApMrvRow {
   saldoDevedor: number
 }
 
+/** Nome da aba que contém as contas/previsões de gastos. */
+export const CONTAS_SHEET = 'Contas'
+
+export interface ImportOptions {
+  /** Se true, ignora linhas com data anterior a hoje. */
+  futureDatesOnly?: boolean
+  /** Sobrescreve o status padrão 'confirmado' de todas as transações importadas. */
+  forcedStatus?: 'confirmado' | 'pendente'
+}
+
 /** Lê um ArrayBuffer de .xlsx e retorna as abas disponíveis. */
 export function getSheetNames(buffer: ArrayBuffer): string[] {
   const wb = XLSX.read(buffer, { type: 'array' })
   return wb.SheetNames
+}
+
+/** Retorna a aba inicial a selecionar: 'Contas' se existir, senão a primeira. */
+export function selectInitialSheet(sheetNames: string[]): string {
+  return sheetNames.includes(CONTAS_SHEET) ? CONTAS_SHEET : (sheetNames[0] ?? '')
 }
 
 /** Detecta automaticamente qual linha (0-based) contém o cabeçalho real.
@@ -117,15 +132,29 @@ function parseDate(value: unknown): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+/** Conta as linhas cujo campo de data seja >= hoje. */
+export function countFutureRows(
+  buffer: ArrayBuffer,
+  sheetName: string,
+  dateColumn: string,
+  headerRow?: number
+): number {
+  const rows  = readSheet(buffer, sheetName, headerRow)
+  const today = new Date().toISOString().slice(0, 10)
+  return rows.filter(row => parseDate(row[dateColumn]) >= today).length
+}
+
 /** Importação genérica com mapeamento de colunas. */
 export async function importGeneric(
   repo: ITransactionRepository,
   buffer: ArrayBuffer,
   sheetName: string,
   mapping: ColumnMapping,
-  headerRow?: number
+  headerRow?: number,
+  options?: ImportOptions
 ): Promise<ImportResult> {
-  const rows = readSheet(buffer, sheetName, headerRow)
+  const rows  = readSheet(buffer, sheetName, headerRow)
+  const today = new Date().toISOString().slice(0, 10)
   let success = 0, skipped = 0
   const errors: string[] = []
 
@@ -135,16 +164,21 @@ export async function importGeneric(
       const amount = parseBRL(row[mapping.amount])
       if (!amount || amount <= 0) { skipped++; continue }
 
+      const date = parseDate(row[mapping.date])
+      if (options?.futureDatesOnly && date < today) { skipped++; continue }
+
       const rawType = mapping.type ? String(row[mapping.type] ?? '').toLowerCase() : ''
-      const type    = rawType.includes('entrada') || rawType.includes('receita') ? 'income' : 'expense'
+      const type    = rawType.includes('entrada') || rawType.includes('receita') ||
+                      rawType.includes('salário') || rawType.includes('salario') ||
+                      rawType.includes('salary') ? 'income' : 'expense'
 
       await addTransaction(repo, {
         type,
-        status:        'confirmado',
+        status:        options?.forcedStatus ?? 'confirmado',
         amount:        Math.abs(amount),
         description:   String(row[mapping.description] ?? `Importado linha ${i + 2}`),
         category:      mapping.category ? String(row[mapping.category] ?? 'other_expense') : (type === 'income' ? 'other_income' : 'other_expense'),
-        date:          parseDate(row[mapping.date]),
+        date,
         paymentMethod: 'cash',
       })
       success++

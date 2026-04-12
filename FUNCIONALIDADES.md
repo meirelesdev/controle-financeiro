@@ -32,6 +32,7 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 | `date` | string | Data no formato `YYYY-MM-DD` |
 | `paymentMethod` | `'cash'` \| `'card'` | Meio de pagamento (campo oculto para entradas) |
 | `cardId` | string? | Preenchido apenas quando `paymentMethod === 'card'` |
+| `installmentGroupId` | string? | Vincula as parcelas de uma mesma compra parcelada (formato `ig_<timestamp>_<random>`) |
 
 ### CreditCard (cartão de crédito)
 
@@ -222,15 +223,62 @@ O modal é compartilhado entre o Dashboard (lançamento rápido) e o Extrato (FA
 - **Categorias** carregadas via `getEffectiveCategories(type)` — fixas + personalizadas, atualiza ao trocar o tipo
 - **Pagamento** — campo oculto quando o tipo é `income` (entradas não têm meio de pagamento)
 - **Cartão** — aparece apenas quando `paymentMethod === 'card'` e tipo é `expense`
+- **Parcelas** — aparece apenas em novos lançamentos com `paymentMethod === 'card'` (não disponível na edição)
 - **Validação** — erros exibem toast e mantêm o modal aberto (sem fechar)
 
-### 3.4 Criação de transação
+### 3.4 Criação de transação simples
 
 ```
 id        = 'tx_' + Date.now() + '_' + random(5 chars)
 createdAt = updatedAt = new Date().toISOString()
 amount    → sempre positivo
+status    → conforme seleção do usuário
 ```
+
+### 3.5 Criação de transação parcelada — `addInstallmentGroup`
+
+Acionado quando o usuário seleciona Cartão de Crédito e define **Número de Parcelas > 1**.
+
+```
+n            = número de parcelas
+groupId      = 'ig_' + Date.now() + '_' + random(5 chars)
+baseAmount   = round(totalAmount / n, 2 casas)
+lastAmount   = round(totalAmount − baseAmount × (n − 1), 2 casas)  ← absorve arredondamento
+
+Para i = 0..n−1:
+  parcelNum  = i + 1
+  date[i]    = i === 0 ? dataOriginal : addMonths(dataOriginal, i)
+  status[i]  = i === 0 ? statusSelecionado : 'pendente'
+  amount[i]  = i === n−1 ? lastAmount : baseAmount
+  desc[i]    = '<descrição> (PP/NN)'  // ex: 'TV (02/06)'
+  installmentGroupId = groupId
+```
+
+**`addMonths(dateStr, months)`** — incrementa o mês clampando ao último dia do mês destino (ex: 31/jan + 1 mês → 28/fev).
+
+**Preview no modal:** ao digitar valor e número de parcelas, exibe `"Serão criadas N parcelas de R$ X cada"` antes de confirmar.
+
+**Impacto nos saldos:**
+- Parcela 1: entra no saldoReal **se** confirmada, ou apenas no projetado se pendente
+- Parcelas 2…N: sempre `pendente` → aparecem no Saldo Projetado dos meses futuros, sem afetar o Patrimônio Total (Saldo Real) até confirmação manual
+- Cada parcela tem sua própria `date`, portanto cai no mês correto do extrato e na fatura correta do cartão (via `getTransactionBillingMonth`)
+
+### 3.6 Edição e exclusão
+
+**Edição:** edita apenas a parcela selecionada individualmente; o `installmentGroupId` é preservado.
+
+**Exclusão de transação parcelada:** ao clicar 🗑️ em uma transação com `installmentGroupId`, o sistema pergunta:
+
+> *"Deseja excluir apenas esta parcela ou esta e todas as próximas?"*
+
+| Opção | Comportamento |
+|-------|---------------|
+| **Só esta parcela** | Remove apenas o registro selecionado |
+| **Esta e as próximas** | Remove todas as parcelas do mesmo grupo com `date >= date da parcela selecionada` |
+
+A exclusão em grupo é implementada por `deleteInstallmentGroup(repo, id)` em `DeleteTransaction.ts`.
+
+**Badge visual:** transações pertencentes a um grupo exibem o badge cinza "parcelado" no card do extrato.
 
 ---
 
@@ -249,6 +297,8 @@ SE dia >  card.closingDay:  fatura = mês seguinte
 ```
 
 **Exemplo:** Fechamento dia 15. Compra em 10/abr → fatura abril. Compra em 20/abr → fatura maio.
+
+**Compras parceladas:** cada parcela tem sua própria `date` (incrementada em 1 mês), portanto `getTransactionBillingMonth` é aplicado individualmente a cada parcela. Uma compra de 6× feita em 10/abr com fechamento dia 15 terá: parcela 1 → fatura abril, parcela 2 → fatura maio, e assim por diante.
 
 ### 4.2 Cálculo da fatura — `computeCardBill(card, allTransactions, year, month)`
 
@@ -316,7 +366,39 @@ O saldo total dos cofrinhos (`Σ savings[i].balance`) é somado ao `allTimeBalan
 **Arquivo:** `src/application/use-cases/data/ImportFromExcel.ts`  
 **View:** `src/presentation/views/ImportView.ts`
 
-### 6.1 Detecção automática do cabeçalho — `detectHeaderRow`
+### 6.1 Seleção de aba
+
+Ao carregar um arquivo, o sistema chama `selectInitialSheet(sheetNames)`:
+
+```
+SE 'Contas' está entre as abas disponíveis:
+  seleciona 'Contas' automaticamente
+SENÃO:
+  seleciona a primeira aba
+```
+
+Se a aba `'Contas'` for selecionada, um banner informativo é exibido tanto no seletor de aba quanto no painel de mapeamento de colunas.
+
+### 6.2 Importação de previsões — aba "Contas"
+
+Quando a aba ativa for `'Contas'`, o fluxo de importação opera em **modo previsão**:
+
+```
+Filtro de data: importa apenas linhas com date >= hoje
+Status forçado: todas as transações criadas com status = 'pendente'
+```
+
+**Confirmação antes de salvar:** após o usuário mapear as colunas e clicar "Importar", o sistema conta as linhas futuras (`countFutureRows`) e exibe:
+
+> *"Encontradas X transações futuras na aba Contas. Deseja importar como pendentes?"*
+
+O usuário confirma antes de qualquer gravação no IndexedDB.
+
+**Linhas com data passada** são contabilizadas como `skipped` e não são importadas.
+
+**Impacto nos saldos:** transações criadas com `status = 'pendente'` aparecem no Saldo Projetado do Dashboard mas não afetam o Patrimônio Total (Saldo Real) até confirmação manual.
+
+### 6.3 Detecção automática do cabeçalho — `detectHeaderRow`
 
 ```
 Para cada linha i (máx 15):
@@ -326,7 +408,7 @@ Para cada linha i (máx 15):
 
 O usuário pode corrigir manualmente na interface.
 
-### 6.2 Parsing de valores BRL
+### 6.4 Parsing de valores BRL
 
 ```
 'R$ 1.234,56'  →  1234.56
@@ -334,7 +416,7 @@ O usuário pode corrigir manualmente na interface.
 1234.56        →  1234.56
 ```
 
-### 6.3 Parsing de datas
+### 6.5 Parsing de datas
 
 ```
 Date object  →  .toISOString().slice(0, 10)
@@ -343,20 +425,22 @@ Date object  →  .toISOString().slice(0, 10)
 Fallback:       data atual
 ```
 
-### 6.4 Classificação automática do tipo
+### 6.6 Classificação automática do tipo
 
 ```
-SE coluna tipo contém 'entrada' OU 'receita' → income
-SENÃO                                        → expense
+SE coluna tipo contém 'entrada' OU 'receita' OU 'salário' OU 'salario' OU 'salary' → income
+SENÃO                                                                                → expense
 ```
 
 Se a coluna tipo não for mapeada, todas as linhas são importadas como `expense`.
 
-### 6.5 Linhas ignoradas
+### 6.7 Linhas ignoradas
 
-Linha pulada quando valor parseado é 0, negativo ou vazio.
+Linha pulada (`skipped`) quando:
+- Valor parseado é 0, negativo ou vazio
+- Modo previsão ativo (`futureDatesOnly`) e `date < hoje`
 
-### 6.6 Parser dedicado AP MRV — `parseApMrvSheet`
+### 6.8 Parser dedicado AP MRV — `parseApMrvSheet`
 
 Detecta colunas por palavras-chave (case-insensitive):
 
@@ -367,7 +451,9 @@ Detecta colunas por palavras-chave (case-insensitive):
 | Saldo Devedor | `saldo`, `restante`, `balance` |
 | Parcela | `parcela`, `numero`, `n°`, `parc` |
 
-### 6.7 Cálculos AP MRV
+Ativado automaticamente quando o nome da aba corresponde ao padrão `/ap.?mrv|pagamento.*ap|financiam/i`.
+
+### 6.9 Cálculos AP MRV
 
 ```
 totalAmort  = Σ(row.amortizacao)
@@ -478,6 +564,14 @@ Nome: `controle-financeiro` — versão atual: **1**
 range = IDBKeyRange.bound('YYYY-MM-01', 'YYYY-MM-31')
 db.getAllFromIndex('transactions', 'by-date', range)
 ```
+
+### Consulta por grupo de parcelas (`getByInstallmentGroup`)
+
+```
+getAll().filter(t => t.installmentGroupId === groupId)
+```
+
+Utilizado por `deleteInstallmentGroup` para localizar todas as parcelas de uma compra parcelada antes de excluir as futuras.
 
 ### Singleton de conexão
 

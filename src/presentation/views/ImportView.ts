@@ -5,8 +5,12 @@ import {
   detectHeaderRow,
   importGeneric,
   parseApMrvSheet,
+  CONTAS_SHEET,
+  selectInitialSheet,
+  countFutureRows,
   type ColumnMapping,
   type ApMrvRow,
+  type ImportOptions,
 } from '../../application/use-cases/data/ImportFromExcel'
 import { showToast } from '../components/Toast'
 import { formatCurrency } from '../utils/formatters'
@@ -38,6 +42,7 @@ export async function renderImport(
       <!-- Sheet selector -->
       <div class="card mb-4" id="sheet-selector-wrap">
         <div class="section-title">Selecionar aba</div>
+        <div id="sheet-contas-banner" class="hidden mb-3"></div>
         <select id="sheet-select" class="select mb-3"></select>
         <button id="btn-load-sheet" class="btn-primary w-full">Carregar aba</button>
       </div>
@@ -47,6 +52,7 @@ export async function renderImport(
         <div class="section-title">Mapear colunas</div>
         <div id="mapping-fields" class="space-y-3"></div>
         <button id="btn-import-generic" class="btn-primary w-full mt-4">Importar</button>
+        <div id="contas-confirm" class="hidden mt-3"></div>
       </div>
 
       <!-- AP MRV specific -->
@@ -73,6 +79,24 @@ export async function renderImport(
 
     const sheetSelect = document.getElementById('sheet-select') as HTMLSelectElement
     sheetSelect.innerHTML = sheetNames.map(n => `<option value="${n}">${n}</option>`).join('')
+
+    // Auto-seleciona a aba 'Contas' se existir
+    const initialSheet = selectInitialSheet(sheetNames)
+    sheetSelect.value = initialSheet
+
+    // Banner informativo quando 'Contas' é detectada
+    const contasBanner = document.getElementById('sheet-contas-banner')!
+    if (initialSheet === CONTAS_SHEET) {
+      contasBanner.innerHTML = `
+        <div class="flex items-center gap-2 text-sm rounded-lg px-3 py-2 bg-primary/10 text-primary">
+          <span>📅</span>
+          <span>Aba <strong>Contas</strong> detectada — serão importadas apenas transações futuras como <strong>pendentes</strong>.</span>
+        </div>
+      `
+      contasBanner.classList.remove('hidden')
+    } else {
+      contasBanner.classList.add('hidden')
+    }
 
     document.getElementById('import-steps')!.classList.remove('hidden')
     showToast(`Arquivo carregado: ${sheetNames.length} aba(s)`, 'success')
@@ -101,6 +125,7 @@ export async function renderImport(
   }
 
   function renderGenericMapping(buffer: ArrayBuffer, sheetName: string, overrideHeaderRow?: number) {
+    const isContas    = sheetName === CONTAS_SHEET
     const detectedRow = overrideHeaderRow ?? detectHeaderRow(buffer, sheetName)
     const rows        = readSheet(buffer, sheetName, detectedRow)
     if (rows.length === 0) { showToast('Aba vazia ou cabeçalho não detectado', 'warning'); return }
@@ -126,7 +151,14 @@ export async function renderImport(
     const autoAmount = bestMatch(['valor', 'value', 'amount', 'montante', 'preço'])
     const autoType   = bestMatch(['tipo', 'type', 'entrada', 'saida'])
 
-    fields.innerHTML = `
+    const contasInfoHtml = isContas ? `
+      <div class="flex items-center gap-2 text-sm rounded-lg px-3 py-2 bg-primary/10 text-primary mb-1">
+        <span>📅</span>
+        <span>Modo previsão: apenas datas ≥ hoje serão importadas como <strong>pendentes</strong>.</span>
+      </div>
+    ` : ''
+
+    fields.innerHTML = contasInfoHtml + `
       <!-- Linha de cabeçalho detectada -->
       <div class="card-sm mb-1 flex items-center justify-between gap-3">
         <div class="text-xs text-subtle flex items-center gap-1">
@@ -188,6 +220,47 @@ export async function renderImport(
 
       if (!mapping.date || !mapping.description || !mapping.amount) {
         showToast('Mapeie as colunas obrigatórias', 'error'); return
+      }
+
+      if (isContas) {
+        // Conta transações futuras e exibe confirmação antes de salvar
+        const futureCount = countFutureRows(buffer, sheetName, mapping.date, detectedRow)
+        const confirmDiv  = document.getElementById('contas-confirm')!
+        confirmDiv.innerHTML = `
+          <div class="rounded-xl border border-slate-600 p-4 bg-bg-card">
+            <div class="flex items-start gap-3 mb-3">
+              <span class="text-xl mt-0.5">📅</span>
+              <div>
+                <div class="font-semibold text-muted text-sm">Importação de Previsões</div>
+                <p class="text-sm text-subtle mt-1">
+                  Encontradas <strong class="text-primary">${futureCount}</strong> transações futuras na aba
+                  <strong class="text-primary">Contas</strong>.
+                  Deseja importar como <strong class="text-warning">pendentes</strong>?
+                </p>
+                <p class="text-xs text-subtle mt-1">Elas aparecerão no Saldo Projetado e não afetarão o Saldo Real até confirmação manual.</p>
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button id="btn-confirm-contas" class="btn-primary flex-1 text-sm">Sim, importar ${futureCount} como pendentes</button>
+              <button id="btn-cancel-contas" class="btn-ghost text-sm">Cancelar</button>
+            </div>
+          </div>
+        `
+        confirmDiv.classList.remove('hidden')
+
+        document.getElementById('btn-confirm-contas')?.addEventListener('click', async () => {
+          confirmDiv.classList.add('hidden')
+          showToast('Importando previsões...', 'info', 1500)
+          const options: ImportOptions = { futureDatesOnly: true, forcedStatus: 'pendente' }
+          const result = await importGeneric(txRepo, buffer, sheetName, mapping, detectedRow, options)
+          showToast(`✅ ${result.success} previsões importadas como pendentes · ⏭ ${result.skipped} ignoradas`, 'success', 5000)
+          if (result.errors.length > 0) console.warn('Erros de importação:', result.errors)
+        })
+
+        document.getElementById('btn-cancel-contas')?.addEventListener('click', () => {
+          confirmDiv.classList.add('hidden')
+        })
+        return
       }
 
       showToast('Importando...', 'info', 1500)

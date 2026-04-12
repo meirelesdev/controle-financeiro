@@ -1,12 +1,12 @@
 import type { ITransactionRepository } from '../../domain/repositories/ITransactionRepository'
 import type { ICreditCardRepository }  from '../../domain/repositories/ICreditCardRepository'
 import type { Transaction, TransactionType, TransactionStatus } from '../../domain/entities/Transaction'
-import { addTransaction }    from '../../application/use-cases/transactions/AddTransaction'
+import { addTransaction, addInstallmentGroup } from '../../application/use-cases/transactions/AddTransaction'
 import { updateTransaction } from '../../application/use-cases/transactions/UpdateTransaction'
 import { getEffectiveCategories } from '../../application/use-cases/categories/ManageCategories'
 import { openModal, getModalBody } from './Modal'
 import { showToast } from './Toast'
-import { todayISO } from '../utils/formatters'
+import { todayISO, formatCurrency } from '../utils/formatters'
 import { validateAmount, validateDescription, validateDate } from '../utils/validators'
 
 export interface TransactionModalOptions {
@@ -77,6 +77,12 @@ export async function openTransactionModal(
             ${cards.map(c => `<option value="${c.id}" ${c.id === existing?.cardId ? 'selected' : ''}>${c.name}</option>`).join('')}
           </select>
         </div>
+        <div id="f-installments-wrap" class="hidden">
+          <label class="form-label">Número de Parcelas</label>
+          <input id="f-installments" type="number" min="1" max="48" step="1"
+            class="input" value="1" placeholder="1">
+          <div id="f-installments-preview" class="hidden mt-1.5 text-xs font-medium text-primary"></div>
+        </div>
       </div>
     `,
     confirmLabel: isEdit ? 'Salvar' : 'Adicionar',
@@ -92,13 +98,16 @@ export async function openTransactionModal(
       const cardId = method === 'card'
         ? (body.querySelector('#f-card') as HTMLSelectElement)?.value
         : undefined
+      const installments = !isEdit && method === 'card'
+        ? Math.max(1, parseInt((body.querySelector('#f-installments') as HTMLInputElement)?.value) || 1)
+        : 1
 
       const amtErr  = validateAmount(amount)
       const descErr = validateDescription(desc)
       const dateErr = validateDate(date)
       if (amtErr || descErr || dateErr) {
         showToast(amtErr ?? descErr ?? dateErr ?? 'Erro de validação', 'error')
-        return false   // mantém o modal aberto
+        return false
       }
 
       if (isEdit && existing) {
@@ -106,6 +115,12 @@ export async function openTransactionModal(
           type, status, amount, description: desc, category: cat, date, paymentMethod: method, cardId,
         })
         showToast('Transação atualizada', 'success')
+      } else if (installments > 1) {
+        await addInstallmentGroup(txRepo, {
+          type, status, amount, description: desc, category: cat, date,
+          paymentMethod: method, cardId, installments,
+        })
+        showToast(`${installments} parcelas criadas`, 'success')
       } else {
         await addTransaction(txRepo, {
           type, status, amount, description: desc, category: cat, date, paymentMethod: method, cardId,
@@ -128,14 +143,41 @@ export async function openTransactionModal(
       .join('')
   }
 
+  function updateInstallmentsPreview() {
+    const preview      = body!.querySelector('#f-installments-preview') as HTMLElement
+    const installments = Math.max(1, parseInt((body!.querySelector('#f-installments') as HTMLInputElement)?.value) || 1)
+    const amount       = parseFloat((body!.querySelector('#f-amount') as HTMLInputElement).value) || 0
+    if (installments > 1 && amount > 0) {
+      const per = Math.round((amount / installments) * 100) / 100
+      preview.textContent = `Serão criadas ${installments} parcelas de ${formatCurrency(per)} cada`
+      preview.classList.remove('hidden')
+    } else {
+      preview.classList.add('hidden')
+    }
+  }
+
   function updatePaymentVisibility() {
-    const rawType    = (body!.querySelector('#f-type')   as HTMLSelectElement).value
-    const method     = (body!.querySelector('#f-method') as HTMLSelectElement).value
-    const methodWrap = body!.querySelector('#f-method-wrap') as HTMLElement
-    const cardWrap   = body!.querySelector('#f-card-wrap')   as HTMLElement
-    // Para entradas, oculta o campo de pagamento (não se aplica)
+    const rawType       = (body!.querySelector('#f-type')   as HTMLSelectElement).value
+    const method        = (body!.querySelector('#f-method') as HTMLSelectElement).value
+    const methodWrap    = body!.querySelector('#f-method-wrap')     as HTMLElement
+    const cardWrap      = body!.querySelector('#f-card-wrap')       as HTMLElement
+    const installWrap   = body!.querySelector('#f-installments-wrap') as HTMLElement
+
     methodWrap.classList.toggle('hidden', rawType === 'income')
     cardWrap.classList.toggle('hidden', method !== 'card' || rawType === 'income')
+
+    // Parcelas só disponíveis em novos lançamentos no cartão
+    const showInstallments = !isEdit && method === 'card' && rawType !== 'income'
+    installWrap.classList.toggle('hidden', !showInstallments)
+    if (!showInstallments) {
+      // Reset ao esconder
+      const input = body!.querySelector('#f-installments') as HTMLInputElement
+      if (input) input.value = '1'
+      const preview = body!.querySelector('#f-installments-preview') as HTMLElement
+      if (preview) preview.classList.add('hidden')
+    } else {
+      updateInstallmentsPreview()
+    }
   }
 
   body.querySelector('#f-type')?.addEventListener('change', async () => {
@@ -143,6 +185,8 @@ export async function openTransactionModal(
     updatePaymentVisibility()
   })
   body.querySelector('#f-method')?.addEventListener('change', updatePaymentVisibility)
+  body.querySelector('#f-installments')?.addEventListener('input', updateInstallmentsPreview)
+  body.querySelector('#f-amount')?.addEventListener('input', updateInstallmentsPreview)
 
   await updateCategories()
   updatePaymentVisibility()

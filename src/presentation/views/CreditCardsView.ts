@@ -7,7 +7,7 @@ import { renderMonthPicker } from '../components/MonthPicker'
 import { openModal, getModalBody } from '../components/Modal'
 import { showToast } from '../components/Toast'
 import { renderTransactionCard } from '../components/TransactionCard'
-import { deleteTransaction } from '../../application/use-cases/transactions/DeleteTransaction'
+import { deleteTransaction, deleteInstallmentGroup } from '../../application/use-cases/transactions/DeleteTransaction'
 import { formatCurrency, getCurrentYearMonth } from '../utils/formatters'
 import { validateName, validateDay } from '../utils/validators'
 
@@ -114,7 +114,16 @@ export async function renderCreditCards(
       } else {
         cardTx.sort((a, b) => b.date.localeCompare(a.date)).forEach(t => {
           txList.appendChild(renderTransactionCard(t,
-            async (id) => { await deleteTransaction(txRepo, id); showToast('Removido', 'success'); await render() },
+            async (id, deleteGroup) => {
+              if (deleteGroup) {
+                const count = await deleteInstallmentGroup(txRepo, id)
+                showToast(`${count} parcela${count !== 1 ? 's' : ''} removida${count !== 1 ? 's' : ''}`, 'success')
+              } else {
+                await deleteTransaction(txRepo, id)
+                showToast('Removido', 'success')
+              }
+              await render()
+            },
             () => {}
           ))
         })

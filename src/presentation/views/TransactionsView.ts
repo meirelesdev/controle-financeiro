@@ -2,7 +2,7 @@ import type { ITransactionRepository } from '../../domain/repositories/ITransact
 import type { ICreditCardRepository }  from '../../domain/repositories/ICreditCardRepository'
 import type { Transaction, TransactionType } from '../../domain/entities/Transaction'
 import { listTransactions }   from '../../application/use-cases/transactions/ListTransactions'
-import { deleteTransaction }  from '../../application/use-cases/transactions/DeleteTransaction'
+import { deleteTransaction, deleteInstallmentGroup }  from '../../application/use-cases/transactions/DeleteTransaction'
 import { renderMonthPicker }  from '../components/MonthPicker'
 import { renderTransactionCard } from '../components/TransactionCard'
 import { openTransactionModal }  from '../components/TransactionModal'
@@ -51,9 +51,14 @@ export async function renderTransactions(
         listEl.appendChild(
           renderTransactionCard(
             t,
-            async (id) => {
-              await deleteTransaction(txRepo, id)
-              showToast('Transação removida', 'success')
+            async (id, deleteGroup) => {
+              if (deleteGroup) {
+                const count = await deleteInstallmentGroup(txRepo, id)
+                showToast(`${count} parcela${count !== 1 ? 's' : ''} removida${count !== 1 ? 's' : ''}`, 'success')
+              } else {
+                await deleteTransaction(txRepo, id)
+                showToast('Transação removida', 'success')
+              }
               await renderList()
             },
             (tx) => openTransactionModal(txRepo, cardRepo, renderList, { existing: tx })
