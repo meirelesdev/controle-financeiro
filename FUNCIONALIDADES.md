@@ -28,9 +28,9 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 | `status` | `'pendente'` \| `'confirmado'` | Determina se entra no saldo real ou apenas no projetado |
 | `amount` | number | Valor sempre positivo (em reais) |
 | `description` | string | Texto livre |
-| `category` | string | ID de categoria (ver tabela abaixo) |
+| `category` | string | ID de categoria (fixas ou personalizadas — ver seção 1.4) |
 | `date` | string | Data no formato `YYYY-MM-DD` |
-| `paymentMethod` | `'cash'` \| `'card'` | Meio de pagamento |
+| `paymentMethod` | `'cash'` \| `'card'` | Meio de pagamento (campo oculto para entradas) |
 | `cardId` | string? | Preenchido apenas quando `paymentMethod === 'card'` |
 
 ### CreditCard (cartão de crédito)
@@ -49,9 +49,11 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 | `balance` | number | Saldo atual acumulado |
 | `type` | `'bank'` \| `'digital'` \| `'piggybank'` | Tipo visual |
 
-### Categorias disponíveis
+### 1.4 Categorias
 
-**Entradas:**
+As categorias são divididas em **fixas** (embutidas no código) e **personalizadas** (criadas pelo usuário e salvas no IndexedDB).
+
+**Entradas fixas:**
 
 | ID | Label |
 |----|-------|
@@ -62,7 +64,7 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 | `investment` | Rendimento |
 | `other_income` | Outras Entradas |
 
-**Saídas:**
+**Saídas fixas:**
 
 | ID | Label |
 |----|-------|
@@ -78,6 +80,12 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 | `credit_card` | Fatura Cartão |
 | `other_expense` | Outras Saídas |
 
+**Personalizadas:**
+
+Criadas pelo usuário em Configurações → Categorias personalizadas. Armazenadas no IndexedDB (store `settings`, chave `custom_categories`). O ID gerado segue o padrão `custom_<timestamp>`.
+
+Todos os selects de categoria nos formulários de transação exibem **fixas + personalizadas** mescladas, via `getEffectiveCategories(type)` em `ManageCategories.ts`.
+
 ---
 
 ## 2. Dashboard
@@ -87,28 +95,62 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 
 ### 2.1 Fonte de dados
 
-O dashboard filtra transações **pelo mês/ano selecionado** no MonthPicker. O usuário pode navegar para meses anteriores. O mês padrão é o mês atual.
-
 ```
-txRepo.getByMonth(year, month)  →  transações do mês selecionado
-txRepo.getAll()                 →  todas as transações (para histórico e faturas)
-cardRepo.getAll()               →  todos os cartões
-savingsRepo.getAll()            →  todos os cofrinhos
+txRepo.getAll()        →  todas as transações (patrimônio, histórico e faturas)
+txRepo.getByMonth(y,m) →  transações do mês selecionado (resumo mensal)
+cardRepo.getAll()      →  todos os cartões
+savingsRepo.getAll()   →  todos os cofrinhos
 ```
 
-### 2.2 Resumo mensal — `computeMonthlySummary(transactions)`
+O usuário navega entre meses com o MonthPicker. O padrão é o mês atual.
 
-Percorre todas as transações do mês. Transações do tipo `'transfer'` são **completamente ignoradas** (não afetam nenhum saldo).
+### 2.2 Lançamento rápido
+
+Dois botões no topo do dashboard permitem criar transações sem navegar até o Extrato:
+
+- **+ Receita** (borda verde) — abre o modal com tipo `income` pré-selecionado
+- **+ Despesa** (borda vermelha) — abre o modal com tipo `expense` pré-selecionado
+
+Ambos utilizam o componente `TransactionModal` compartilhado (ver seção 3.3). Após salvar, o dashboard é recarregado automaticamente.
+
+### 2.3 Card de Patrimônio Total
+
+O card principal exibe o **patrimônio consolidado**, não apenas o saldo do mês:
 
 ```
-Para cada transação t:
+allTimeBalance = Σ(t.amount × sign) para todas as transações onde:
+  t.status === 'confirmado'
+  t.type   !== 'transfer'
+  sign = +1 se income, −1 se expense
+
+totalSavings = Σ(savings[i].balance)
+
+patrimonio = allTimeBalance + totalSavings
+```
+
+**Detalhamento exibido no card:**
+
+| Label | Valor |
+|-------|-------|
+| Patrimônio Total | `allTimeBalance + totalSavings` |
+| Disponível | `allTimeBalance` — saldo acumulado de todas as transações confirmadas |
+| Cofrinhos | `totalSavings` — dinheiro reservado nos cofrinhos |
+
+> O patrimônio mostra o valor real que o usuário possui: o dinheiro em conta (calculado pelo histórico completo de transações) somado ao que está guardado nos cofrinhos.
+
+### 2.4 Cards mensais — `computeMonthlySummary(transactions)`
+
+Calculado sobre as transações **do mês selecionado**. Transações `'transfer'` são ignoradas.
+
+```
+Para cada transação t do mês:
   sign = (t.type === 'income') ? +1 : -1
   value = t.amount × sign
 
-  saldoProjetado += value           ← SEMPRE (pendente + confirmado)
+  saldoProjetado += value            ← SEMPRE (pendente + confirmado)
 
   SE t.status === 'confirmado':
-    saldoReal += value              ← apenas confirmadas
+    saldoReal += value
     SE t.type === 'income':  totalIncome  += t.amount
     SE t.type === 'expense': totalExpense += t.amount
 
@@ -116,66 +158,38 @@ Para cada transação t:
     pendingCount++
 
   SE t.type === 'expense':
-    byCategory[t.category] += t.amount   ← acumula para o gráfico pizza
+    byCategory[t.category] += t.amount
 ```
-
-**Resultados exibidos:**
 
 | Card | Fórmula |
 |------|---------|
-| **Saldo Real** | `Σ(income confirmado) − Σ(expense confirmado)` |
-| **Saldo Projetado** | `Σ(income) − Σ(expense)` — inclui pendentes |
-| **Total Entradas** | `Σ(amount)` onde `type=income AND status=confirmado` |
-| **Total Saídas** | `Σ(amount)` onde `type=expense AND status=confirmado` |
-| **Pendentes** | Contagem de transações com `status=pendente` |
+| **Entradas (mês)** | `Σ(amount)` onde `type=income AND status=confirmado` |
+| **Saídas (mês)** | `Σ(amount)` onde `type=expense AND status=confirmado` |
+| **Saldo do mês** | `saldoReal` — exibido apenas quando há transações pendentes |
+| **Projetado** | `saldoProjetado` — inclui pendentes |
 
-> **Regra importante:** Uma transação `pendente` conta no `saldoProjetado` mas **não** no `saldoReal`, `totalIncome` nem `totalExpense`. Isso permite lançar previsões (ex: salário que ainda não caiu) sem distorcer os números reais.
+> **Regra:** transação `pendente` entra no projetado mas **não** no saldoReal, totalIncome nem totalExpense.
 
-### 2.3 Gráfico pizza — gastos por categoria
+### 2.5 Gráfico pizza — gastos por categoria
 
-Usa o campo `byCategory` do `computeMonthlySummary`. Cada fatia é uma categoria de despesa com seu total acumulado no mês. Só aparece se houver ao menos uma despesa no mês.
+Usa o campo `byCategory` de `computeMonthlySummary`. Só aparece se houver ao menos uma despesa no mês. Inclui categorias personalizadas (o emoji é exibido; se não encontrado nas categorias fixas, usa 📌 como fallback).
 
-```
-byCategory = {
-  'food':      450.00,
-  'housing':  1200.00,
-  'transport': 180.00,
-  ...
-}
-```
-
-Apenas despesas entram neste gráfico. Entradas e transferências são excluídas.
-
-### 2.4 Gráfico de barras — histórico 6 meses (`computeMonthlyHistory`)
-
-Calcula os 6 meses anteriores (incluindo o atual) em ordem cronológica:
+### 2.6 Gráfico de barras — histórico 6 meses (`computeMonthlyHistory`)
 
 ```
 Para cada um dos últimos 6 meses:
-  Filtra transações onde:
-    - date.year === y  AND  date.month === m
-    - status === 'confirmado'          ← pendentes não entram no histórico
-
+  Filtra transações:  date.year===y AND date.month===m AND status==='confirmado'
   totalIncome[mês]  = Σ(amount) onde type='income'
   totalExpense[mês] = Σ(amount) onde type='expense'
 ```
 
-O gráfico exibe barras duplas (verde = entradas, vermelho = saídas) para visualizar a evolução ao longo dos meses.
+### 2.7 Resumo de cartões no dashboard
 
-### 2.5 Resumo de cartões no dashboard
+Para cada cartão, calcula a fatura do mês selecionado (ver seção 4.2). Exibe valor da fatura, barra de progresso `(fatura / limite) × 100%` e cor vermelha acima de 80%.
 
-Para cada cartão, calcula a **fatura do mês selecionado** (ver seção 4.2 para a fórmula completa). Exibe:
-- Valor da fatura atual
-- Barra de progresso: `(fatura / limite) × 100%`
-- A barra fica vermelha quando ultrapassa 80% do limite
+### 2.8 Resumo de cofrinhos no dashboard
 
-### 2.6 Resumo de cofrinhos no dashboard
-
-```
-totalSavings = Σ(savings[i].balance)   para todos os cofrinhos
-```
-
-Exibe o total consolidado e o saldo individual de cada cofrinho.
+Exibe o total guardado e o saldo individual de cada cofrinho. Valor já incluído no Patrimônio Total (seção 2.3).
 
 ---
 
@@ -185,29 +199,38 @@ Exibe o total consolidado e o saldo individual de cada cofrinho.
 
 ### 3.1 Filtros
 
-As transações são filtradas por:
-- **Mês/ano** — via `txRepo.getByMonth(year, month)` (índice IndexedDB `by-date`)
+- **Mês/ano** — via `txRepo.getByMonth(year, month)` (índice `by-date`)
 - **Tipo** — `income`, `expense`, ou todos
-- **Categoria** — aplicado depois de buscar do banco
 
-### 3.2 Ordenação
+### 3.2 Ordenação e agrupamento
 
-Transações são ordenadas por data decrescente (`b.date.localeCompare(a.date)`) e depois agrupadas por data para exibição.
+Transações ordenadas por data decrescente e agrupadas por data para exibição.
 
-### 3.3 Badge visual de status
+### 3.3 Modal de transação — componente compartilhado
 
-- `confirmado` → sem badge
-- `pendente` → badge laranja "pendente" ao lado da descrição
+**Arquivo:** `src/presentation/components/TransactionModal.ts`
+
+O modal é compartilhado entre o Dashboard (lançamento rápido) e o Extrato (FAB e edição). Aceita as opções:
+
+| Opção | Descrição |
+|-------|-----------|
+| `existing` | Transação a editar (preenche todos os campos) |
+| `initialType` | `'income'` ou `'expense'` — pré-seleciona o tipo ao criar |
+
+**Comportamento dinâmico:**
+
+- **Categorias** carregadas via `getEffectiveCategories(type)` — fixas + personalizadas, atualiza ao trocar o tipo
+- **Pagamento** — campo oculto quando o tipo é `income` (entradas não têm meio de pagamento)
+- **Cartão** — aparece apenas quando `paymentMethod === 'card'` e tipo é `expense`
+- **Validação** — erros exibem toast e mantêm o modal aberto (sem fechar)
 
 ### 3.4 Criação de transação
 
-Ao salvar:
 ```
-id = 'tx_' + Date.now() + '_' + random(5 chars)
+id        = 'tx_' + Date.now() + '_' + random(5 chars)
 createdAt = updatedAt = new Date().toISOString()
+amount    → sempre positivo
 ```
-
-O `amount` é sempre armazenado como número positivo, independentemente de ser entrada ou saída.
 
 ---
 
@@ -218,42 +241,32 @@ O `amount` é sempre armazenado como número positivo, independentemente de ser 
 
 ### 4.1 Lógica de faturamento — `getTransactionBillingMonth(date, card)`
 
-Cada compra no cartão pertence a uma fatura específica, determinada pelo dia de fechamento:
-
 ```
 dia = day(date)
 
-SE dia <= card.closingDay:
-  fatura = mês atual da compra
-
-SE dia > card.closingDay:
-  fatura = mês seguinte ao da compra
+SE dia <= card.closingDay:  fatura = mês atual da compra
+SE dia >  card.closingDay:  fatura = mês seguinte
 ```
 
-**Exemplo:** Cartão com fechamento dia 15.
-- Compra em 10/abr → fatura de **abril**
-- Compra em 20/abr → fatura de **maio**
+**Exemplo:** Fechamento dia 15. Compra em 10/abr → fatura abril. Compra em 20/abr → fatura maio.
 
 ### 4.2 Cálculo da fatura — `computeCardBill(card, allTransactions, year, month)`
 
 ```
-fatura = Σ(t.amount) para todas as transações onde:
+fatura = Σ(t.amount) onde:
   t.type === 'expense'
   t.paymentMethod === 'card'
   t.cardId === card.id
   getTransactionBillingMonth(t.date, card) === { year, month }
 ```
 
-A fatura não se baseia no mês da compra, mas no **mês de faturamento** calculado pela regra acima. Uma compra feita em abril pode aparecer na fatura de maio.
+> A fatura agrupa por **mês de vencimento**, não pelo mês da compra. O saldo mensal do dashboard (seção 2.4) conta a despesa no **mês em que ocorreu**, garantindo fluxo de caixa correto.
 
 ### 4.3 Percentual de limite utilizado
 
 ```
 pct = (fatura / card.limit) × 100
-
-Cor da barra:
-  pct <= 80% → cor do cartão (personalizada)
-  pct >  80% → vermelho (#E53935)
+Cor: pct > 80% → vermelho; senão → cor personalizada do cartão
 ```
 
 ### 4.4 Melhor dia para comprar — `getBestPurchaseDay(card)`
@@ -262,9 +275,7 @@ Cor da barra:
 melhorDia = (card.closingDay % 28) + 1
 ```
 
-Comprar a partir deste dia garante que a compra caia na **próxima** fatura, dando máximo prazo para pagamento.
-
-**Exemplo:** Fechamento dia 15 → melhor dia = `(15 % 28) + 1 = 16`. A partir do dia 16, a compra vai para a fatura do mês seguinte.
+A partir deste dia, a compra cai na fatura do mês seguinte, maximizando o prazo.
 
 ---
 
@@ -273,41 +284,30 @@ Comprar a partir deste dia garante que a compra caia na **próxima** fatura, dan
 **Arquivo:** `src/presentation/views/SavingsView.ts`  
 **Use Case:** `src/application/use-cases/savings/ManageSavings.ts`
 
-### 5.1 Operações de saldo
+### 5.1 Depositar / Retirar
 
-**Depositar:**
 ```
-savings.balance = savings.balance + amount
-```
-
-**Retirar:**
-```
-Validação: amount <= savings.balance  (não permite saldo negativo)
-savings.balance = savings.balance - amount
+Depositar: savings.balance += amount
+Retirar:   validação: amount <= savings.balance
+           savings.balance -= amount
 ```
 
 ### 5.2 Transferência entre cofrinhos — `transferBetweenSavings`
 
 ```
-Validações:
-  - cofrinho de origem existe
-  - cofrinho de destino existe
-  - from.balance >= amount  (saldo suficiente)
+Validações: origem existe, destino existe, from.balance >= amount
 
 Execução atômica:
-  1. Cria transação interna tipo='transfer' status='confirmado' (saída)
-  2. Cria transação interna tipo='transfer' status='confirmado' (entrada)
-  3. from.balance -= amount
-  4. to.balance   += amount
+  1. Cria transação interna type='transfer', status='confirmado'
+  2. from.balance -= amount
+  3. to.balance   += amount
 ```
 
-As transações internas de transferência são registradas no histórico mas **ignoradas em todos os cálculos de saldo** do dashboard (o `computeMonthlySummary` pula `type === 'transfer'`).
+Transações de transferência são ignoradas em todos os cálculos de saldo (`computeMonthlySummary` pula `type === 'transfer'`).
 
-### 5.3 Total consolidado
+### 5.3 Integração com o Patrimônio
 
-```
-totalSavings = Σ(savings[i].balance)
-```
+O saldo total dos cofrinhos (`Σ savings[i].balance`) é somado ao `allTimeBalance` de transações para compor o **Patrimônio Total** exibido no Dashboard (seção 2.3).
 
 ---
 
@@ -318,98 +318,101 @@ totalSavings = Σ(savings[i].balance)
 
 ### 6.1 Detecção automática do cabeçalho — `detectHeaderRow`
 
-Planilhas com linhas de título antes do cabeçalho real são tratadas automaticamente:
-
 ```
-Para cada linha i (máx 15 linhas):
-  stringCols = células onde:
-    - typeof cell === 'string'
-    - cell.trim() !== ''
-    - isNaN(Number(cell))   ← exclui células numéricas
-
-  SE stringCols.length >= 3:
-    retorna i  ← esta é a linha do cabeçalho
+Para cada linha i (máx 15):
+  stringCols = células onde typeof === 'string' AND !isNaN() === false AND trim() !== ''
+  SE stringCols.length >= 3: retorna i
 ```
 
-O usuário pode ajustar manualmente informando a linha correta na interface.
+O usuário pode corrigir manualmente na interface.
 
 ### 6.2 Parsing de valores BRL
 
-Aceita múltiplos formatos de moeda:
-
 ```
-'R$ 1.234,56'  →  1234.56    (remove R$, espaços e pontos; troca vírgula por ponto)
+'R$ 1.234,56'  →  1234.56
 '1234.56'      →  1234.56
-1234.56        →  1234.56    (número já é passado diretamente)
+1234.56        →  1234.56
 ```
 
 ### 6.3 Parsing de datas
 
 ```
-Formatos aceitos:
-  Date object  →  .toISOString().slice(0, 10)
-  'DD/MM/YYYY' →  'YYYY-MM-DD'
-  'YYYY-MM-DD' →  passado direto
-
-Fallback: data atual
+Date object  →  .toISOString().slice(0, 10)
+'DD/MM/YYYY' →  'YYYY-MM-DD'
+'YYYY-MM-DD' →  passado direto
+Fallback:       data atual
 ```
 
 ### 6.4 Classificação automática do tipo
 
-Se a coluna "Tipo" for mapeada:
 ```
-SE valor contém 'entrada' OU 'receita' (case-insensitive) → type = 'income'
-SENÃO                                                      → type = 'expense'
+SE coluna tipo contém 'entrada' OU 'receita' → income
+SENÃO                                        → expense
 ```
 
-Se a coluna "Tipo" não for mapeada, todas as linhas são importadas como `expense`.
+Se a coluna tipo não for mapeada, todas as linhas são importadas como `expense`.
 
-### 6.5 Linhas ignoradas (skipped)
+### 6.5 Linhas ignoradas
 
-Uma linha é pulada quando:
-- O valor parseado é 0 ou negativo
-- A célula de valor está vazia
+Linha pulada quando valor parseado é 0, negativo ou vazio.
 
 ### 6.6 Parser dedicado AP MRV — `parseApMrvSheet`
 
-Detecta automaticamente as colunas por palavras-chave (case-insensitive):
+Detecta colunas por palavras-chave (case-insensitive):
 
-| Coluna procurada | Termos detectados |
-|-----------------|-------------------|
+| Coluna | Termos |
+|--------|--------|
 | Amortização | `amort`, `principal` |
 | Juros | `juros`, `juro`, `interest` |
 | Saldo Devedor | `saldo`, `restante`, `balance` |
-| Número da Parcela | `parcela`, `numero`, `n°`, `parc` |
+| Parcela | `parcela`, `numero`, `n°`, `parc` |
 
-Linhas onde amortização e juros são ambos zero são descartadas. Resultado ordenado por número de parcela.
-
-### 6.7 Cálculos exibidos para AP MRV
+### 6.7 Cálculos AP MRV
 
 ```
 totalAmort  = Σ(row.amortizacao)
 totalJuros  = Σ(row.juros)
 totalPago   = totalAmort + totalJuros
-
-saldoInicial  = rows[0].saldoDevedor + rows[0].amortizacao
-saldoAtual    = rows[last].saldoDevedor
-
-pctQuitado  = ((saldoInicial - saldoAtual) / saldoInicial) × 100
+saldoInicial = rows[0].saldoDevedor + rows[0].amortizacao
+saldoAtual   = rows[last].saldoDevedor
+pctQuitado   = ((saldoInicial − saldoAtual) / saldoInicial) × 100
 ```
 
-O gráfico de linha exibe duas séries:
-- **Saldo Devedor** — decrescente ao longo das parcelas (vermelho)
-- **Amortização acumulada** — crescente (verde)
+Gráfico de linha: saldo devedor (vermelho, decrescente) e amortização acumulada (verde, crescente).
 
 ---
 
 ## 7. Configurações / Backup
 
 **Arquivo:** `src/presentation/views/SettingsView.ts`  
-**Crypto:** `src/infrastructure/crypto/BackupCrypto.ts`
+**Crypto:** `src/infrastructure/crypto/BackupCrypto.ts`  
+**Categories:** `src/application/use-cases/categories/ManageCategories.ts`
 
-### 7.1 Exportar backup JSON (sem senha)
+### 7.1 Categorias personalizadas
 
-Lê diretamente do IndexedDB e gera um JSON:
+O usuário pode criar e remover categorias de Entrada e Saída. As categorias fixas são exibidas como somente-leitura.
+
+**Criar:**
+```
+id    = 'custom_' + Date.now()
+emoji = informado pelo usuário (padrão: 📌)
+label = nome informado
+type  = 'income' | 'expense'
+```
+
+**Armazenamento:**
+```json
+settings['custom_categories'] = {
+  "income":  [{ "id": "custom_...", "label": "...", "emoji": "...", "type": "income"  }],
+  "expense": [{ "id": "custom_...", "label": "...", "emoji": "...", "type": "expense" }]
+}
+```
+
+**Remover:** remove pelo `id` de ambas as listas (por segurança) e persiste.
+
+As categorias personalizadas aparecem automaticamente em todos os formulários de transação, mescladas após as fixas.
+
+### 7.2 Exportar backup JSON (sem senha)
 
 ```json
 {
@@ -421,44 +424,30 @@ Lê diretamente do IndexedDB e gera um JSON:
 }
 ```
 
-### 7.2 Exportar backup cifrado (.cfp)
-
-Usa Web Crypto API nativa (sem biblioteca externa):
+### 7.3 Exportar backup cifrado (.cfp)
 
 ```
-1. Gerar salt aleatório: 16 bytes (crypto.getRandomValues)
-2. Gerar IV aleatório:   12 bytes
-3. Derivar chave AES-256:
-     PBKDF2(password, salt, iterations=100.000, hash='SHA-256')
-4. Cifrar JSON:
-     AES-GCM(key, iv, json_como_bytes)
-5. Formato do arquivo .cfp:
-     [salt: 16 bytes] [iv: 12 bytes] [ciphertext: N bytes]
+1. salt aleatório: 16 bytes
+2. IV aleatório:   12 bytes
+3. PBKDF2(password, salt, 100.000 iterações, SHA-256) → chave AES-256
+4. AES-GCM(key, iv, json_em_bytes) → ciphertext
+5. Arquivo: [salt 16B][iv 12B][ciphertext NB]
 ```
 
-### 7.3 Restaurar backup
+### 7.4 Restaurar backup
 
-**JSON simples:** Lê como texto, faz parse, limpa as stores e reinsere.
+**JSON:** parse → limpa stores → reinsere.  
+**CFP:** extrai salt/iv/ciphertext → deriva chave → AES-GCM decrypt → reinsere. Senha errada gera erro (autenticação implícita do AES-GCM).
 
-**Arquivo .cfp:**
-```
-1. Lê salt (bytes 0–15)
-2. Lê IV (bytes 16–27)
-3. Lê ciphertext (bytes 28–fim)
-4. Deriva chave com a senha informada
-5. AES-GCM decrypt
-6. Lança erro se a senha for incorreta (autenticação implícita do AES-GCM)
-```
-
-A restauração substitui completamente os dados existentes (sem merge).
-
-### 7.4 Apagar todos os dados
+### 7.5 Apagar todos os dados
 
 ```
 db.clear('transactions')
 db.clear('creditCards')
 db.clear('savings')
 ```
+
+> Categorias personalizadas (store `settings`) **não** são apagadas por esta operação.
 
 ---
 
@@ -468,30 +457,32 @@ db.clear('savings')
 
 ### Banco de dados: IndexedDB
 
-Nome do banco: `controle-financeiro` (versão 1)
+Nome: `controle-financeiro` — versão atual: **1**
 
-| Store | Chave primária | Índices |
-|-------|---------------|---------|
-| `transactions` | `id` | `by-date` (date), `by-type` (type), `by-status` (status) |
-| `creditCards` | `id` | — |
-| `savings` | `id` | — |
-| `settings` | `key` | — |
+| Store | Chave | Índices | Uso |
+|-------|-------|---------|-----|
+| `transactions` | `id` | `by-date`, `by-type`, `by-status` | Transações financeiras |
+| `creditCards` | `id` | — | Cartões de crédito |
+| `savings` | `id` | — | Cofrinhos |
+| `settings` | `key` | — | Configurações e categorias personalizadas |
+
+**Chaves usadas na store `settings`:**
+
+| Chave | Valor |
+|-------|-------|
+| `custom_categories` | `{ income: CategoryDef[], expense: CategoryDef[] }` |
 
 ### Consulta por mês (`getByMonth`)
 
 ```
-from  = 'YYYY-MM-01'
-to    = 'YYYY-MM-31'
-range = IDBKeyRange.bound(from, to)
+range = IDBKeyRange.bound('YYYY-MM-01', 'YYYY-MM-31')
 db.getAllFromIndex('transactions', 'by-date', range)
 ```
 
-Usa o índice `by-date` para eficiência — não percorre todas as transações.
-
 ### Singleton de conexão
 
-`getDB()` retorna sempre a mesma instância de `IDBPDatabase`. A conexão é aberta uma vez no bootstrap (`main.ts`) e injetada em todos os repositórios. Fechamento e reabertura são tratados nos callbacks `blocked`/`blocking` do `openDB`.
+`getDB()` retorna sempre a mesma instância de `IDBPDatabase`. Aberta uma vez no bootstrap (`main.ts`) e injetada nos repositórios. Callbacks `blocked`/`blocking` tratam conflitos de versão entre abas.
 
 ### Migrações
 
-Controladas pelo `DB_VERSION`. Cada versão nova adiciona um bloco `if (oldVersion < N)` na função `upgrade`. A versão atual (1) cria todas as stores e índices.
+Controladas por `DB_VERSION`. Cada versão nova adiciona um bloco `if (oldVersion < N)` na função `upgrade`. A versão 1 cria todas as stores e índices.
