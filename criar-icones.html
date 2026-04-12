@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Gerar Ícones PWA</title>
+  <style>
+    body { background: #1A1A2E; color: #F5F5F5; font-family: sans-serif; padding: 32px; text-align: center; }
+    canvas { border-radius: 24px; margin: 16px; }
+    button { background: #00C853; color: #1A1A2E; border: none; padding: 12px 24px; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; margin: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Gerador de Ícones PWA — Controle Financeiro</h2>
+  <p style="color:#94A3B8">Clique em "Gerar" e depois baixe cada ícone.</p>
+
+  <canvas id="canvas192" width="192" height="192"></canvas>
+  <canvas id="canvas512" width="512" height="512"></canvas>
+  <br>
+  <button onclick="generate(192)">Baixar icon-192.png</button>
+  <button onclick="generate(512)">Baixar icon-512.png</button>
+
+  <script>
+    function drawIcon(size) {
+      const canvas = document.getElementById(`canvas${size}`)
+      const ctx = canvas.getContext('2d')
+      const r = size * 0.22
+
+      // Background
+      const grad = ctx.createLinearGradient(0, 0, size, size)
+      grad.addColorStop(0, '#1A1A2E')
+      grad.addColorStop(1, '#16213E')
+      ctx.fillStyle = grad
+      ctx.beginPath()
+      ctx.roundRect(0, 0, size, size, r)
+      ctx.fill()
+
+      // Símbolo R$ estilizado
+      ctx.fillStyle = '#00C853'
+      ctx.font = `bold ${size * 0.42}px Inter, sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('R$', size / 2, size / 2)
+
+      // Linha decorativa
+      ctx.strokeStyle = '#00C85340'
+      ctx.lineWidth = size * 0.03
+      ctx.beginPath()
+      ctx.moveTo(size * 0.15, size * 0.72)
+      ctx.lineTo(size * 0.85, size * 0.72)
+      ctx.stroke()
+    }
+
+    function generate(size) {
+      drawIcon(size)
+      const canvas = document.getElementById(`canvas${size}`)
+      const link = document.createElement('a')
+      link.download = `icon-${size}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    }
+
+    // Draw previews on load
+    [192, 512].forEach(drawIcon)
+  </script>
+</body>
+</html>
