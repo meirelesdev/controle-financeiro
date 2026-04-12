@@ -29,5 +29,14 @@ npm-debug.log*
 *.tmp
 *.temp
 
+# Planilhas pessoais (dados sensíveis)
+*.xlsx
+*.xls
+*.ods
+
+# Screenshots
+*.png
+!public/*.png
+
 # Claude
 .claude/settings.local.json
