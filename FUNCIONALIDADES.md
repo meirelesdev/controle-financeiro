@@ -25,32 +25,64 @@ Documento de referência completo: descreve cada tela, o que ela faz, quais dado
 |-------|------|-----------|
 | `id` | string | Identificador único: `tx_<timestamp>_<random>` |
 | `type` | `'income'` \| `'expense'` \| `'transfer'` | Entrada, saída ou transferência entre cofrinhos |
-| `status` | `'pendente'` \| `'confirmado'` | Determina se entra no saldo real ou apenas no projetado |
+| `status` | `'pendente'` \| `'confirmado'` \| `'pago'` | Ver tabela de semântica abaixo |
 | `amount` | number | Valor sempre positivo (em reais) |
 | `description` | string | Texto livre |
-| `category` | string | ID de categoria (fixas ou personalizadas — ver seção 1.4) |
-| `date` | string | Data no formato `YYYY-MM-DD` |
+| `category` | string | ID de categoria (fixas ou personalizadas — ver seção 1.5) |
+| `date` | string | Data de competência no formato `YYYY-MM-DD` |
 | `paymentMethod` | `'cash'` \| `'card'` | Meio de pagamento (campo oculto para entradas) |
 | `cardId` | string? | Preenchido apenas quando `paymentMethod === 'card'` |
-| `installmentGroupId` | string? | Vincula as parcelas de uma mesma compra parcelada (formato `ig_<timestamp>_<random>`) |
+| `accountId` | string? | Conta bancária vinculada (event sourcing) |
+| `paymentDate` | string? | `YYYY-MM-DD` — data efetiva de pagamento; preenchido quando `status === 'pago'` |
+| `installmentGroupId` | string? | Vincula parcelas de uma mesma compra parcelada (formato `ig_<timestamp>_<random>`) |
+
+**Semântica do campo `status`:**
+
+| Status | Despesa | Receita | Afeta saldoReal? | Afeta saldo da conta? |
+|--------|---------|---------|------------------|-----------------------|
+| `pendente` | Prevista / futura | Prevista / futura | ❌ | ❌ |
+| `confirmado` | Comprometida, mas não paga ao banco | Recebida | ✅ | ✅ receitas; ❌ despesas |
+| `pago` | Quitada — saiu do banco | — | ✅ | ✅ |
+
+> A distinção entre `confirmado` e `pago` em despesas permite separar "despesa comprometida" (aparece no extrato e saldoReal mensal) de "despesa quitada" (abate o saldo da conta bancária via event sourcing).
+
+### Account (conta bancária)
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `id` | string | Identificador único: `acc_<timestamp>_<random>` |
+| `name` | string | Nome do banco (ex: Nubank, Itaú) |
+| `color` | string | Cor hexadecimal para identificação visual |
+| `initialBalance` | number | Saldo da conta no momento do cadastro — base do event sourcing |
+| `cardIds` | string[]? | IDs de cartões de crédito vinculados a esta conta |
+| `createdAt` | string | ISO timestamp |
+
+> O saldo atual da conta **não é armazenado** — é sempre calculado em tempo real pelo selector `selectAccountBalance` (ver seção 2.4).
 
 ### CreditCard (cartão de crédito)
 
 | Campo | Tipo | Descrição |
 |-------|------|-----------|
+| `id` | string | Identificador único |
+| `name` | string | Nome do cartão |
 | `limit` | number | Limite total do cartão |
 | `closingDay` | number | Dia do mês em que a fatura fecha (1–28) |
 | `dueDay` | number | Dia do mês em que a fatura vence (1–28) |
-| `currentBalance` | number | Campo reservado (não usado nos cálculos atuais) |
+| `color` | string | Cor hexadecimal |
+| `accountId` | string? | Conta bancária que paga este cartão |
 
 ### Savings (cofrinho)
 
 | Campo | Tipo | Descrição |
 |-------|------|-----------|
-| `balance` | number | Saldo atual acumulado |
+| `id` | string | Identificador único: `sav_<timestamp>` |
+| `name` | string | Nome do cofrinho |
+| `balance` | number | Saldo atual (atualizado a cada depósito/retirada) |
 | `type` | `'bank'` \| `'digital'` \| `'piggybank'` | Tipo visual |
+| `color` | string | Cor hexadecimal |
+| `accountId` | string? | Conta bancária a que este cofrinho pertence |
 
-### 1.4 Categorias
+### 1.5 Categorias
 
 As categorias são divididas em **fixas** (embutidas no código) e **personalizadas** (criadas pelo usuário e salvas no IndexedDB).
 
@@ -97,13 +129,14 @@ Todos os selects de categoria nos formulários de transação exibem **fixas + p
 ### 2.1 Fonte de dados
 
 ```
-txRepo.getAll()        →  todas as transações (patrimônio, histórico e faturas)
+txRepo.getAll()        →  todas as transações (event sourcing, histórico, faturas)
 txRepo.getByMonth(y,m) →  transações do mês selecionado (resumo mensal)
 cardRepo.getAll()      →  todos os cartões
 savingsRepo.getAll()   →  todos os cofrinhos
+accountRepo.getAll()   →  todas as contas bancárias
 ```
 
-O usuário navega entre meses com o MonthPicker. O padrão é o mês atual.
+O usuário navega entre meses com o MonthPicker — **sem limite de meses futuros**.
 
 ### 2.2 Lançamento rápido
 
@@ -112,34 +145,58 @@ Dois botões no topo do dashboard permitem criar transações sem navegar até o
 - **+ Receita** (borda verde) — abre o modal com tipo `income` pré-selecionado
 - **+ Despesa** (borda vermelha) — abre o modal com tipo `expense` pré-selecionado
 
-Ambos utilizam o componente `TransactionModal` compartilhado (ver seção 3.3). Após salvar, o dashboard é recarregado automaticamente.
+Ambos utilizam o componente `TransactionModal` compartilhado (ver seção 3.3), passando `accountRepo` para exibir o seletor de conta bancária.
 
-### 2.3 Card de Patrimônio Total
+### 2.3 Seção "Minhas Contas"
 
-O card principal exibe o **patrimônio consolidado**, não apenas o saldo do mês:
+Exibe todas as contas bancárias cadastradas com seus saldos calculados por **event sourcing** (selector `selectAccountBalance`). A seção inclui:
+
+- Nome e cor de cada banco
+- Saldo calculado em tempo real (verde se positivo, vermelho se negativo)
+- Subtotal de cofrinhos vinculados à conta (via `accountId`)
+- **Total consolidado** no rodapé
+- Botões de editar e excluir inline por banco
+- Botão **"+ Novo banco"** — abre modal inline para cadastrar nome, saldo inicial e cor
+
+Quando nenhuma conta está cadastrada, exibe mensagem orientativa e usa o saldo histórico de transações como fallback para o cálculo de patrimônio.
+
+### 2.4 Selectors de saldo — `SummaryService`
+
+Os selectors são funções puras que derivam o estado a partir da lista de transações, sem depender de campos calculados armazenados.
+
+#### `isSettled(t)`
 
 ```
-allTimeBalance = Σ(t.amount × sign) para todas as transações onde:
-  t.status === 'confirmado'
+Retorna true se t.status === 'confirmado' || t.status === 'pago'
+Usado em todos os cálculos de saldo real para incluir ambos os estados efetivados.
+```
+
+#### `selectAccountBalance(account, transactions, savings?)`
+
+```
+balance = account.initialBalance
+  + Σ(t.amount) onde t.accountId === account.id AND t.type === 'income'  AND isSettled(t)
+  − Σ(t.amount) onde t.accountId === account.id AND t.type === 'expense' AND t.status === 'pago'
+  + Σ(s.balance) onde s.accountId === account.id   ← cofrinhos vinculados
+```
+
+> Distinção chave: receitas confirmadas já somam; despesas só abatam quando `status === 'pago'`.
+
+#### `selectOpeningBalance(transactions, year, month)`
+
+```
+cutoff = 'YYYY-MM-01' (primeiro dia do mês selecionado)
+
+openingBalance = Σ(t.amount × sign) onde:
+  t.date    < cutoff
   t.type   !== 'transfer'
+  isSettled(t)
   sign = +1 se income, −1 se expense
-
-totalSavings = Σ(savings[i].balance)
-
-patrimonio = allTimeBalance + totalSavings
 ```
 
-**Detalhamento exibido no card:**
+Base do carryover: representa todo o saldo efetivado acumulado **antes** do mês selecionado.
 
-| Label | Valor |
-|-------|-------|
-| Patrimônio Total | `allTimeBalance + totalSavings` |
-| Disponível | `allTimeBalance` — saldo acumulado de todas as transações confirmadas |
-| Cofrinhos | `totalSavings` — dinheiro reservado nos cofrinhos |
-
-> O patrimônio mostra o valor real que o usuário possui: o dinheiro em conta (calculado pelo histórico completo de transações) somado ao que está guardado nos cofrinhos.
-
-### 2.4 Cards mensais — `computeMonthlySummary(transactions)`
+### 2.5 Cards mensais — `computeMonthlySummary(monthTx, allTransactions, year, month)`
 
 Calculado sobre as transações **do mês selecionado**. Transações `'transfer'` são ignoradas.
 
@@ -148,9 +205,9 @@ Para cada transação t do mês:
   sign = (t.type === 'income') ? +1 : -1
   value = t.amount × sign
 
-  saldoProjetado += value            ← SEMPRE (pendente + confirmado)
+  saldoProjetado += value            ← SEMPRE (pendente + confirmado + pago)
 
-  SE t.status === 'confirmado':
+  SE isSettled(t):
     saldoReal += value
     SE t.type === 'income':  totalIncome  += t.amount
     SE t.type === 'expense': totalExpense += t.amount
@@ -160,37 +217,49 @@ Para cada transação t do mês:
 
   SE t.type === 'expense':
     byCategory[t.category] += t.amount
+
+openingBalance = selectOpeningBalance(allTransactions, year, month)
+saldoAcumulado = openingBalance + saldoProjetado
 ```
 
-| Card | Fórmula |
-|------|---------|
-| **Entradas (mês)** | `Σ(amount)` onde `type=income AND status=confirmado` |
-| **Saídas (mês)** | `Σ(amount)` onde `type=expense AND status=confirmado` |
-| **Saldo do mês** | `saldoReal` — exibido apenas quando há transações pendentes |
-| **Projetado** | `saldoProjetado` — inclui pendentes |
+| Campo retornado | Descrição |
+|-----------------|-----------|
+| `totalIncome` | Σ receitas efetivadas no mês |
+| `totalExpense` | Σ despesas efetivadas no mês |
+| `saldoReal` | Fluxo efetivado do mês |
+| `saldoProjetado` | Fluxo total do mês (inclui pendentes) |
+| `openingBalance` | Saldo acumulado até o fim do mês anterior (carryover) |
+| `saldoAcumulado` | `openingBalance + saldoProjetado` — projeção acumulada |
+| `pendingCount` | Número de transações pendentes no mês |
 
-> **Regra:** transação `pendente` entra no projetado mas **não** no saldoReal, totalIncome nem totalExpense.
+**Carryover no dashboard:** quando `openingBalance !== 0`, o card mensal exibe:
 
-### 2.5 Gráfico pizza — gastos por categoria
+```
+Carryover: R$ X → Acumulado: R$ Y
+```
 
-Usa o campo `byCategory` de `computeMonthlySummary`. Só aparece se houver ao menos uma despesa no mês. Inclui categorias personalizadas (o emoji é exibido; se não encontrado nas categorias fixas, usa 📌 como fallback).
+Isso permite ver, por exemplo, que mesmo com saídas em maio o saldo acumulado continua positivo por conta do histórico anterior.
 
-### 2.6 Gráfico de barras — histórico 6 meses (`computeMonthlyHistory`)
+### 2.6 Gráfico pizza — gastos por categoria
+
+Usa o campo `byCategory` de `computeMonthlySummary`. Só aparece se houver ao menos uma despesa no mês.
+
+### 2.7 Gráfico de barras — histórico 6 meses (`computeMonthlyHistory`)
 
 ```
 Para cada um dos últimos 6 meses:
-  Filtra transações:  date.year===y AND date.month===m AND status==='confirmado'
+  Filtra transações:  date.year===y AND date.month===m AND isSettled(t)
   totalIncome[mês]  = Σ(amount) onde type='income'
   totalExpense[mês] = Σ(amount) onde type='expense'
 ```
 
-### 2.7 Resumo de cartões no dashboard
+### 2.8 Resumo de cartões no dashboard
 
 Para cada cartão, calcula a fatura do mês selecionado (ver seção 4.2). Exibe valor da fatura, barra de progresso `(fatura / limite) × 100%` e cor vermelha acima de 80%.
 
-### 2.8 Resumo de cofrinhos no dashboard
+### 2.9 Cofrinhos sem conta vinculada
 
-Exibe o total guardado e o saldo individual de cada cofrinho. Valor já incluído no Patrimônio Total (seção 2.3).
+Quando há contas bancárias cadastradas, exibe separadamente os cofrinhos **sem `accountId`** (não vinculados). Quando não há contas, exibe todos os cofrinhos normalmente.
 
 ---
 
@@ -218,21 +287,38 @@ O modal é compartilhado entre o Dashboard (lançamento rápido) e o Extrato (FA
 | `existing` | Transação a editar (preenche todos os campos) |
 | `initialType` | `'income'` ou `'expense'` — pré-seleciona o tipo ao criar |
 
-**Comportamento dinâmico:**
+**Campos e comportamento dinâmico:**
 
-- **Categorias** carregadas via `getEffectiveCategories(type)` — fixas + personalizadas, atualiza ao trocar o tipo
-- **Pagamento** — campo oculto quando o tipo é `income` (entradas não têm meio de pagamento)
-- **Cartão** — aparece apenas quando `paymentMethod === 'card'` e tipo é `expense`
-- **Parcelas** — aparece apenas em novos lançamentos com `paymentMethod === 'card'` (não disponível na edição)
-- **Validação** — erros exibem toast e mantêm o modal aberto (sem fechar)
+| Campo | Condição de exibição |
+|-------|----------------------|
+| Tipo | Sempre |
+| Status (`pendente` / `confirmado` / `pago`) | Sempre |
+| Valor | Sempre |
+| Descrição | Sempre |
+| Categoria | Sempre (atualiza ao trocar o tipo) |
+| Data | Sempre |
+| Pagamento | Oculto para `income` |
+| Cartão | Visível quando `paymentMethod === 'card'` e tipo é `expense` |
+| Número de Parcelas | Apenas em novos lançamentos no cartão (não na edição) |
+| Conta Bancária | Visível quando há contas cadastradas (`accountRepo`) |
+| **Marcar como Pago** | Apenas para `expense` — checkbox + data de pagamento |
+
+**Checkbox "Marcar como Pago":**
+- Disponível apenas para despesas
+- Ao marcar: define `status = 'pago'` e exibe campo **Data de Pagamento** (padrão: hoje)
+- Sincronização bidirecional com o select de status: alterar o select para `pago` marca o checkbox automaticamente e vice-versa
+- A `paymentDate` é gravada na transação e registra quando a despesa saiu do banco
+
+**Validação:** erros exibem toast e mantêm o modal aberto (sem fechar).
 
 ### 3.4 Criação de transação simples
 
 ```
-id        = 'tx_' + Date.now() + '_' + random(5 chars)
-createdAt = updatedAt = new Date().toISOString()
-amount    → sempre positivo
-status    → conforme seleção do usuário
+id          = 'tx_' + Date.now() + '_' + random(5 chars)
+createdAt   = updatedAt = new Date().toISOString()
+amount      → sempre positivo
+accountId   → opcional, vínculo com conta bancária
+paymentDate → preenchido apenas quando status === 'pago'
 ```
 
 ### 3.5 Criação de transação parcelada — `addInstallmentGroup`
@@ -243,42 +329,39 @@ Acionado quando o usuário seleciona Cartão de Crédito e define **Número de P
 n            = número de parcelas
 groupId      = 'ig_' + Date.now() + '_' + random(5 chars)
 baseAmount   = round(totalAmount / n, 2 casas)
-lastAmount   = round(totalAmount − baseAmount × (n − 1), 2 casas)  ← absorve arredondamento
+lastAmount   = round(totalAmount − baseAmount × (n − 1), 2 casas)
 
 Para i = 0..n−1:
-  parcelNum  = i + 1
   date[i]    = i === 0 ? dataOriginal : addMonths(dataOriginal, i)
   status[i]  = i === 0 ? statusSelecionado : 'pendente'
   amount[i]  = i === n−1 ? lastAmount : baseAmount
-  desc[i]    = '<descrição> (PP/NN)'  // ex: 'TV (02/06)'
+  desc[i]    = '<descrição> (PP/NN)'
   installmentGroupId = groupId
 ```
 
-**`addMonths(dateStr, months)`** — incrementa o mês clampando ao último dia do mês destino (ex: 31/jan + 1 mês → 28/fev).
+**`addMonths`** clamba ao último dia do mês destino (ex: 31/jan + 1 mês → 28/fev).
 
-**Preview no modal:** ao digitar valor e número de parcelas, exibe `"Serão criadas N parcelas de R$ X cada"` antes de confirmar.
+**Preview no modal:** *"Serão criadas N parcelas de R$ X cada"*.
 
 **Impacto nos saldos:**
-- Parcela 1: entra no saldoReal **se** confirmada, ou apenas no projetado se pendente
-- Parcelas 2…N: sempre `pendente` → aparecem no Saldo Projetado dos meses futuros, sem afetar o Patrimônio Total (Saldo Real) até confirmação manual
-- Cada parcela tem sua própria `date`, portanto cai no mês correto do extrato e na fatura correta do cartão (via `getTransactionBillingMonth`)
+- Parcela 1: entra no saldoReal se efetivada, no projetado se pendente
+- Parcelas 2…N: sempre `pendente` → aparecem no Saldo Projetado dos meses futuros
+- Cada parcela tem sua `date` própria → cai no mês correto do extrato e na fatura correta do cartão
 
 ### 3.6 Edição e exclusão
 
-**Edição:** edita apenas a parcela selecionada individualmente; o `installmentGroupId` é preservado.
+**Edição:** edita apenas a parcela selecionada; `installmentGroupId` é preservado.
 
-**Exclusão de transação parcelada:** ao clicar 🗑️ em uma transação com `installmentGroupId`, o sistema pergunta:
+**Exclusão de transação parcelada:** ao clicar 🗑️ em transação com `installmentGroupId`, o sistema pergunta:
 
 > *"Deseja excluir apenas esta parcela ou esta e todas as próximas?"*
 
 | Opção | Comportamento |
 |-------|---------------|
 | **Só esta parcela** | Remove apenas o registro selecionado |
-| **Esta e as próximas** | Remove todas as parcelas do mesmo grupo com `date >= date da parcela selecionada` |
+| **Esta e as próximas** | Remove todas as parcelas do grupo com `date >= date da parcela` |
 
-A exclusão em grupo é implementada por `deleteInstallmentGroup(repo, id)` em `DeleteTransaction.ts`.
-
-**Badge visual:** transações pertencentes a um grupo exibem o badge cinza "parcelado" no card do extrato.
+**Badge visual:** transações com `installmentGroupId` exibem badge cinza "parcelado". Transações com `status === 'pendente'` exibem badge amarelo "pendente".
 
 ---
 
@@ -296,9 +379,7 @@ SE dia <= card.closingDay:  fatura = mês atual da compra
 SE dia >  card.closingDay:  fatura = mês seguinte
 ```
 
-**Exemplo:** Fechamento dia 15. Compra em 10/abr → fatura abril. Compra em 20/abr → fatura maio.
-
-**Compras parceladas:** cada parcela tem sua própria `date` (incrementada em 1 mês), portanto `getTransactionBillingMonth` é aplicado individualmente a cada parcela. Uma compra de 6× feita em 10/abr com fechamento dia 15 terá: parcela 1 → fatura abril, parcela 2 → fatura maio, e assim por diante.
+**Compras parceladas:** cada parcela tem sua própria `date` (+1 mês), portanto `getTransactionBillingMonth` é aplicado individualmente — cada parcela cai na fatura do seu mês.
 
 ### 4.2 Cálculo da fatura — `computeCardBill(card, allTransactions, year, month)`
 
@@ -310,7 +391,7 @@ fatura = Σ(t.amount) onde:
   getTransactionBillingMonth(t.date, card) === { year, month }
 ```
 
-> A fatura agrupa por **mês de vencimento**, não pelo mês da compra. O saldo mensal do dashboard (seção 2.4) conta a despesa no **mês em que ocorreu**, garantindo fluxo de caixa correto.
+> A fatura agrupa por **mês de vencimento**, não pelo mês da compra.
 
 ### 4.3 Percentual de limite utilizado
 
@@ -324,8 +405,6 @@ Cor: pct > 80% → vermelho; senão → cor personalizada do cartão
 ```
 melhorDia = (card.closingDay % 28) + 1
 ```
-
-A partir deste dia, a compra cai na fatura do mês seguinte, maximizando o prazo.
 
 ---
 
@@ -353,11 +432,14 @@ Execução atômica:
   3. to.balance   += amount
 ```
 
-Transações de transferência são ignoradas em todos os cálculos de saldo (`computeMonthlySummary` pula `type === 'transfer'`).
+Transações de transferência são ignoradas em todos os cálculos de saldo (`computeMonthlySummary` e selectors pulam `type === 'transfer'`).
 
-### 5.3 Integração com o Patrimônio
+### 5.3 Vínculo com conta bancária
 
-O saldo total dos cofrinhos (`Σ savings[i].balance`) é somado ao `allTimeBalance` de transações para compor o **Patrimônio Total** exibido no Dashboard (seção 2.3).
+O campo `accountId` em Savings permite vincular um cofrinho a uma conta bancária. Quando vinculado:
+- O saldo do cofrinho é somado ao saldo da conta em `selectAccountBalance`
+- O cofrinho aparece agrupado sob o banco correspondente no Dashboard
+- Cofrinhos sem `accountId` são exibidos na seção "Cofrinhos sem conta" (quando há bancos cadastrados)
 
 ---
 
@@ -368,35 +450,27 @@ O saldo total dos cofrinhos (`Σ savings[i].balance`) é somado ao `allTimeBalan
 
 ### 6.1 Seleção de aba
 
-Ao carregar um arquivo, o sistema chama `selectInitialSheet(sheetNames)`:
-
 ```
 SE 'Contas' está entre as abas disponíveis:
-  seleciona 'Contas' automaticamente
+  seleciona 'Contas' automaticamente (CONTAS_SHEET = 'Contas')
 SENÃO:
   seleciona a primeira aba
 ```
 
-Se a aba `'Contas'` for selecionada, um banner informativo é exibido tanto no seletor de aba quanto no painel de mapeamento de colunas.
+Quando a aba `'Contas'` é selecionada, um banner informativo é exibido.
 
 ### 6.2 Importação de previsões — aba "Contas"
 
-Quando a aba ativa for `'Contas'`, o fluxo de importação opera em **modo previsão**:
+Modo previsão ativo quando `sheetName === CONTAS_SHEET`:
 
 ```
-Filtro de data: importa apenas linhas com date >= hoje
-Status forçado: todas as transações criadas com status = 'pendente'
+Filtro: importa apenas linhas com date >= hoje
+Status: todas as transações criadas com status = 'pendente'
 ```
 
-**Confirmação antes de salvar:** após o usuário mapear as colunas e clicar "Importar", o sistema conta as linhas futuras (`countFutureRows`) e exibe:
+**Confirmação antes de salvar:** `countFutureRows` conta linhas futuras e exibe:
 
 > *"Encontradas X transações futuras na aba Contas. Deseja importar como pendentes?"*
-
-O usuário confirma antes de qualquer gravação no IndexedDB.
-
-**Linhas com data passada** são contabilizadas como `skipped` e não são importadas.
-
-**Impacto nos saldos:** transações criadas com `status = 'pendente'` aparecem no Saldo Projetado do Dashboard mas não afetam o Patrimônio Total (Saldo Real) até confirmação manual.
 
 ### 6.3 Detecção automática do cabeçalho — `detectHeaderRow`
 
@@ -406,14 +480,11 @@ Para cada linha i (máx 15):
   SE stringCols.length >= 3: retorna i
 ```
 
-O usuário pode corrigir manualmente na interface.
-
 ### 6.4 Parsing de valores BRL
 
 ```
 'R$ 1.234,56'  →  1234.56
 '1234.56'      →  1234.56
-1234.56        →  1234.56
 ```
 
 ### 6.5 Parsing de datas
@@ -432,53 +503,41 @@ SE coluna tipo contém 'entrada' OU 'receita' OU 'salário' OU 'salario' OU 'sal
 SENÃO                                                                                → expense
 ```
 
-Se a coluna tipo não for mapeada, todas as linhas são importadas como `expense`.
-
 ### 6.7 Linhas ignoradas
 
-Linha pulada (`skipped`) quando:
-- Valor parseado é 0, negativo ou vazio
-- Modo previsão ativo (`futureDatesOnly`) e `date < hoje`
+Linha pulada (`skipped`) quando valor parseado é 0/negativo/vazio, ou quando modo previsão ativo e `date < hoje`.
 
 ### 6.8 Parser dedicado AP MRV — `parseApMrvSheet`
 
-Detecta colunas por palavras-chave (case-insensitive):
+Ativado quando o nome da aba corresponde a `/ap.?mrv|pagamento.*ap|financiam/i`.
 
-| Coluna | Termos |
-|--------|--------|
+| Coluna | Termos detectados |
+|--------|-------------------|
 | Amortização | `amort`, `principal` |
 | Juros | `juros`, `juro`, `interest` |
 | Saldo Devedor | `saldo`, `restante`, `balance` |
 | Parcela | `parcela`, `numero`, `n°`, `parc` |
 
-Ativado automaticamente quando o nome da aba corresponde ao padrão `/ap.?mrv|pagamento.*ap|financiam/i`.
-
 ### 6.9 Cálculos AP MRV
 
 ```
-totalAmort  = Σ(row.amortizacao)
-totalJuros  = Σ(row.juros)
-totalPago   = totalAmort + totalJuros
+totalAmort   = Σ(row.amortizacao)
+totalJuros   = Σ(row.juros)
+totalPago    = totalAmort + totalJuros
 saldoInicial = rows[0].saldoDevedor + rows[0].amortizacao
 saldoAtual   = rows[last].saldoDevedor
 pctQuitado   = ((saldoInicial − saldoAtual) / saldoInicial) × 100
 ```
-
-Gráfico de linha: saldo devedor (vermelho, decrescente) e amortização acumulada (verde, crescente).
 
 ---
 
 ## 7. Configurações / Backup
 
 **Arquivo:** `src/presentation/views/SettingsView.ts`  
-**Crypto:** `src/infrastructure/crypto/BackupCrypto.ts`  
-**Categories:** `src/application/use-cases/categories/ManageCategories.ts`
+**Crypto:** `src/infrastructure/crypto/BackupCrypto.ts`
 
 ### 7.1 Categorias personalizadas
 
-O usuário pode criar e remover categorias de Entrada e Saída. As categorias fixas são exibidas como somente-leitura.
-
-**Criar:**
 ```
 id    = 'custom_' + Date.now()
 emoji = informado pelo usuário (padrão: 📌)
@@ -486,29 +545,21 @@ label = nome informado
 type  = 'income' | 'expense'
 ```
 
-**Armazenamento:**
-```json
-settings['custom_categories'] = {
-  "income":  [{ "id": "custom_...", "label": "...", "emoji": "...", "type": "income"  }],
-  "expense": [{ "id": "custom_...", "label": "...", "emoji": "...", "type": "expense" }]
-}
-```
-
-**Remover:** remove pelo `id` de ambas as listas (por segurança) e persiste.
-
-As categorias personalizadas aparecem automaticamente em todos os formulários de transação, mescladas após as fixas.
+Armazenadas em `settings['custom_categories']` como `{ income: CategoryDef[], expense: CategoryDef[] }`.
 
 ### 7.2 Exportar backup JSON (sem senha)
 
 ```json
 {
   "version": 1,
-  "exportedAt": "2026-04-12T10:00:00.000Z",
+  "exportedAt": "...",
   "transactions": [...],
   "creditCards":  [...],
   "savings":      [...]
 }
 ```
+
+> Nota: a store `accounts` não é incluída no backup atual.
 
 ### 7.3 Exportar backup cifrado (.cfp)
 
@@ -523,7 +574,7 @@ As categorias personalizadas aparecem automaticamente em todos os formulários d
 ### 7.4 Restaurar backup
 
 **JSON:** parse → limpa stores → reinsere.  
-**CFP:** extrai salt/iv/ciphertext → deriva chave → AES-GCM decrypt → reinsere. Senha errada gera erro (autenticação implícita do AES-GCM).
+**CFP:** extrai salt/iv/ciphertext → deriva chave → AES-GCM decrypt → reinsere.
 
 ### 7.5 Apagar todos os dados
 
@@ -533,7 +584,7 @@ db.clear('creditCards')
 db.clear('savings')
 ```
 
-> Categorias personalizadas (store `settings`) **não** são apagadas por esta operação.
+> Categorias personalizadas (store `settings`) e contas bancárias (store `accounts`) **não** são apagadas por esta operação.
 
 ---
 
@@ -543,13 +594,14 @@ db.clear('savings')
 
 ### Banco de dados: IndexedDB
 
-Nome: `controle-financeiro` — versão atual: **1**
+Nome: `controle-financeiro` — versão atual: **2**
 
 | Store | Chave | Índices | Uso |
 |-------|-------|---------|-----|
-| `transactions` | `id` | `by-date`, `by-type`, `by-status` | Transações financeiras |
+| `transactions` | `id` | `by-date`, `by-type`, `by-status`, `by-account` | Transações financeiras |
 | `creditCards` | `id` | — | Cartões de crédito |
 | `savings` | `id` | — | Cofrinhos |
+| `accounts` | `id` | — | Contas bancárias |
 | `settings` | `key` | — | Configurações e categorias personalizadas |
 
 **Chaves usadas na store `settings`:**
@@ -571,12 +623,19 @@ db.getAllFromIndex('transactions', 'by-date', range)
 getAll().filter(t => t.installmentGroupId === groupId)
 ```
 
-Utilizado por `deleteInstallmentGroup` para localizar todas as parcelas de uma compra parcelada antes de excluir as futuras.
+### Consulta por conta (`by-account`)
 
-### Singleton de conexão
-
-`getDB()` retorna sempre a mesma instância de `IDBPDatabase`. Aberta uma vez no bootstrap (`main.ts`) e injetada nos repositórios. Callbacks `blocked`/`blocking` tratam conflitos de versão entre abas.
+O índice `by-account` permite consultas eficientes por `accountId`. Atualmente `selectAccountBalance` usa `getAll()` com filter em memória (simples e suficiente para o volume esperado).
 
 ### Migrações
 
-Controladas por `DB_VERSION`. Cada versão nova adiciona um bloco `if (oldVersion < N)` na função `upgrade`. A versão 1 cria todas as stores e índices.
+Controladas por `DB_VERSION`. Cada versão adiciona um bloco `if (oldVersion === N)` na função `upgrade`.
+
+| Versão | Mudança |
+|--------|---------|
+| 1 | Cria stores `transactions`, `creditCards`, `savings`, `settings` com índices iniciais |
+| 2 | Adiciona store `accounts`; adiciona índice `by-account` em `transactions` |
+
+### Singleton de conexão
+
+`getDB()` retorna sempre a mesma instância de `IDBPDatabase`. Aberta uma vez no bootstrap (`main.ts`) e injetada nos repositórios via DI. Callbacks `blocked`/`blocking` tratam conflitos de versão entre abas.
