@@ -5,7 +5,7 @@ import { IdbCreditCardRepository }  from './infrastructure/repositories/IdbCredi
 import { IdbSavingsRepository }      from './infrastructure/repositories/IdbSavingsRepository'
 import { IdbAccountRepository }      from './infrastructure/repositories/IdbAccountRepository'
 import { renderBottomNav, type RouteId } from './presentation/components/BottomNav'
-import { registerRoute, startRouter, navigate } from './presentation/router'
+import { registerRoute, registerDynamicRoute, startRouter, navigate } from './presentation/router'
 import { renderDashboard }    from './presentation/views/DashboardView'
 import { renderTransactions } from './presentation/views/TransactionsView'
 import { renderCreditCards }  from './presentation/views/CreditCardsView'
@@ -13,6 +13,7 @@ import { renderSavings }      from './presentation/views/SavingsView'
 import { renderAccounts }     from './presentation/views/AccountsView'
 import { renderImport }       from './presentation/views/ImportView'
 import { renderSettings }     from './presentation/views/SettingsView'
+import { renderBankDetail }   from './presentation/views/BankDetailView'
 
 async function bootstrap() {
   // Bloqueia alertas nativos (usa Toast ao invés)
@@ -43,6 +44,7 @@ async function bootstrap() {
   registerRoute('accounts',     (el) => renderAccounts(el, accountRepo, txRepo, cardRepo, savingsRepo))
   registerRoute('import',       (el) => renderImport(el, txRepo))
   registerRoute('settings',     (el) => renderSettings(el))
+  registerDynamicRoute('bank',  (el, params) => renderBankDetail(el, params!.id, accountRepo, txRepo, cardRepo, savingsRepo))
 
   function renderNav(active: RouteId) {
     renderBottomNav(navEl, active, (route) => navigate(route))

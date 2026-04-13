@@ -16,6 +16,7 @@ export async function addCreditCard(
     closingDay:     input.closingDay,
     dueDay:         input.dueDay,
     color:          input.color ?? CARD_COLORS[cards.length % CARD_COLORS.length],
+    accountId:      input.accountId,
     createdAt:      new Date().toISOString(),
   }
   await repo.add(card)

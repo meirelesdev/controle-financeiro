@@ -248,11 +248,23 @@ export async function openTransactionModal(
     }
   }
 
+  function syncCardToAccount() {
+    const cardSel    = body!.querySelector('#f-card')    as HTMLSelectElement | null
+    const accountSel = body!.querySelector('#f-account') as HTMLSelectElement | null
+    if (!cardSel || !accountSel) return
+    const selectedCard = cards.find(c => c.id === cardSel.value)
+    if (selectedCard?.accountId) accountSel.value = selectedCard.accountId
+  }
+
   body.querySelector('#f-type')?.addEventListener('change', async () => {
     await updateCategories()
     updatePaymentVisibility()
   })
-  body.querySelector('#f-method')?.addEventListener('change', updatePaymentVisibility)
+  body.querySelector('#f-method')?.addEventListener('change', () => {
+    updatePaymentVisibility()
+    syncCardToAccount()
+  })
+  body.querySelector('#f-card')?.addEventListener('change', syncCardToAccount)
   body.querySelector('#f-installments')?.addEventListener('input', updateInstallmentsPreview)
   body.querySelector('#f-amount')?.addEventListener('input', updateInstallmentsPreview)
   body.querySelector('#f-paid-check')?.addEventListener('change', syncPaidCheckbox)
