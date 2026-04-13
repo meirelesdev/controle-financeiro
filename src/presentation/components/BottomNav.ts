@@ -1,11 +1,10 @@
 export type RouteId = 'dashboard' | 'transactions' | 'accounts' | 'import' | 'settings'
 
 const NAV_ITEMS: { id: RouteId; label: string; emoji: string }[] = [
-  { id: 'dashboard',    label: 'Início',   emoji: '🏠' },
-  { id: 'transactions', label: 'Extrato',  emoji: '📋' },
-  { id: 'accounts',     label: 'Bancos',   emoji: '🏦' },
-  { id: 'import',       label: 'Importar', emoji: '📊' },
-  { id: 'settings',     label: 'Config',   emoji: '⚙️' },
+  { id: 'dashboard',    label: 'Início',  emoji: '🏠' },
+  { id: 'transactions', label: 'Extrato', emoji: '📋' },
+  { id: 'accounts',     label: 'Bancos',  emoji: '🏦' },
+  { id: 'settings',     label: 'Config',  emoji: '⚙️' },
 ]
 
 export function renderBottomNav(

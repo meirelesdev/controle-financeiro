@@ -41,8 +41,9 @@ function parseHash(): { key: string; params: Record<string, string> } {
  *  Rotas dinâmicas sob 'bank' apontam para 'accounts' como pai. */
 export function getCurrentRoute(): RouteId {
   const { key } = parseHash()
-  if (routes.has(key)) return key as RouteId
-  if (key === 'bank')  return 'accounts'
+  if (key === 'bank')   return 'accounts'
+  if (key === 'import') return 'settings'
+  if (routes.has(key))  return key as RouteId
   return 'dashboard'
 }
 

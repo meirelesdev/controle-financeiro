@@ -9,6 +9,7 @@ import { getCategoriesForType } from '../../domain/constants/Categories'
 import { decryptBackup } from '../../infrastructure/crypto/BackupCrypto'
 import { showToast } from '../components/Toast'
 import { openModal, getModalBody } from '../components/Modal'
+import { navigate } from '../router'
 
 export async function renderSettings(container: HTMLElement): Promise<void> {
   container.innerHTML = `
@@ -34,6 +35,15 @@ export async function renderSettings(container: HTMLElement): Promise<void> {
       <div id="custom-cats-wrap" class="space-y-4">
         <div class="text-xs text-subtle">Carregando...</div>
       </div>
+    </div>
+
+    <!-- Importar planilha -->
+    <div class="card mb-4">
+      <div class="section-title">Importar dados</div>
+      <p class="text-xs text-subtle mb-3">Importe transações a partir de uma planilha Excel (.xlsx).</p>
+      <button id="btn-go-import" class="btn-outline w-full">
+        📊 Importar planilha Excel
+      </button>
     </div>
 
     <!-- Backup -->
@@ -84,6 +94,9 @@ export async function renderSettings(container: HTMLElement): Promise<void> {
       <p class="text-xs text-subtle mt-2 text-center">Esta ação é irreversível. Faça backup antes.</p>
     </div>
   `
+
+  // ── Importar planilha ─────────────────────────────────────
+  document.getElementById('btn-go-import')?.addEventListener('click', () => navigate('import'))
 
   // ── Categorias personalizadas ──────────────────────────────
   async function renderCustomCats() {
