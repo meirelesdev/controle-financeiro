@@ -1,4 +1,4 @@
-import { formatMonthYear, getCurrentYearMonth } from '../utils/formatters'
+import { formatMonthYear } from '../utils/formatters'
 
 export interface MonthPickerOptions {
   year: number
@@ -27,8 +27,6 @@ export function renderMonthPicker(opts: MonthPickerOptions): HTMLElement {
     })
 
     el.querySelector('#mp-next')?.addEventListener('click', () => {
-      const now = getCurrentYearMonth()
-      if (opts.year === now.year && opts.month === now.month) return
       if (opts.month === 12) { opts.year++; opts.month = 1 }
       else opts.month++
       opts.onChange(opts.year, opts.month)

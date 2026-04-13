@@ -10,6 +10,8 @@ export interface AddTransactionInput {
   date: string
   paymentMethod: PaymentMethod
   cardId?: string
+  accountId?: string
+  paymentDate?: string
 }
 
 export interface AddInstallmentInput {
@@ -52,6 +54,8 @@ export async function addTransaction(
     date:          input.date,
     paymentMethod: input.paymentMethod,
     cardId:        input.cardId,
+    accountId:     input.accountId,
+    paymentDate:   input.paymentDate,
     createdAt:     now,
     updatedAt:     now,
   }

@@ -8,5 +8,7 @@ export interface CreditCard {
   /** Dia do vencimento da fatura (ex: 10) */
   dueDay: number
   color: string
+  /** Conta bancária que paga este cartão */
+  accountId?: string
   createdAt: string
 }

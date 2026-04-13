@@ -3,6 +3,7 @@ import { getDB } from './infrastructure/database/DatabaseHelper'
 import { IdbTransactionRepository } from './infrastructure/repositories/IdbTransactionRepository'
 import { IdbCreditCardRepository }  from './infrastructure/repositories/IdbCreditCardRepository'
 import { IdbSavingsRepository }      from './infrastructure/repositories/IdbSavingsRepository'
+import { IdbAccountRepository }      from './infrastructure/repositories/IdbAccountRepository'
 import { renderBottomNav, type RouteId } from './presentation/components/BottomNav'
 import { registerRoute, startRouter, navigate } from './presentation/router'
 import { renderDashboard }    from './presentation/views/DashboardView'
@@ -16,10 +17,11 @@ async function bootstrap() {
   // Bloqueia alertas nativos (usa Toast ao invés)
   window.alert = (msg) => console.warn('alert blocked:', msg)
 
-  const db         = await getDB()
-  const txRepo     = new IdbTransactionRepository(db)
-  const cardRepo   = new IdbCreditCardRepository(db)
+  const db          = await getDB()
+  const txRepo      = new IdbTransactionRepository(db)
+  const cardRepo    = new IdbCreditCardRepository(db)
   const savingsRepo = new IdbSavingsRepository(db)
+  const accountRepo = new IdbAccountRepository(db)
 
   // App shell
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -33,7 +35,7 @@ async function bootstrap() {
   const navEl  = document.getElementById('bottom-nav')!
 
   // Registrar rotas
-  registerRoute('dashboard',    (el) => renderDashboard(el, txRepo, cardRepo, savingsRepo))
+  registerRoute('dashboard',    (el) => renderDashboard(el, txRepo, cardRepo, savingsRepo, accountRepo))
   registerRoute('transactions', (el) => renderTransactions(el, txRepo, cardRepo))
   registerRoute('cards',        (el) => renderCreditCards(el, cardRepo, txRepo))
   registerRoute('savings',      (el) => renderSavings(el, savingsRepo, txRepo))

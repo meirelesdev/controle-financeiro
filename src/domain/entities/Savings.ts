@@ -6,5 +6,7 @@ export interface Savings {
   balance: number
   type: SavingsType
   color: string
+  /** Conta bancária a que este cofrinho pertence */
+  accountId?: string
   updatedAt: string
 }

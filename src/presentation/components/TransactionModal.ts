@@ -1,5 +1,6 @@
 import type { ITransactionRepository } from '../../domain/repositories/ITransactionRepository'
 import type { ICreditCardRepository }  from '../../domain/repositories/ICreditCardRepository'
+import type { IAccountRepository }     from '../../domain/repositories/IAccountRepository'
 import type { Transaction, TransactionType, TransactionStatus } from '../../domain/entities/Transaction'
 import { addTransaction, addInstallmentGroup } from '../../application/use-cases/transactions/AddTransaction'
 import { updateTransaction } from '../../application/use-cases/transactions/UpdateTransaction'
@@ -15,18 +16,21 @@ export interface TransactionModalOptions {
 }
 
 export async function openTransactionModal(
-  txRepo:    ITransactionRepository,
-  cardRepo:  ICreditCardRepository,
-  onSuccess: () => void | Promise<void>,
-  options:   TransactionModalOptions = {}
+  txRepo:      ITransactionRepository,
+  cardRepo:    ICreditCardRepository,
+  onSuccess:   () => void | Promise<void>,
+  options:     TransactionModalOptions = {},
+  accountRepo?: IAccountRepository
 ): Promise<void> {
   const { existing, initialType } = options
   const preType = (existing?.type === 'income' || existing?.type === 'expense')
     ? existing.type
     : (initialType ?? 'expense')
-  const cards  = await cardRepo.getAll()
-  const isEdit = !!existing
-  const today  = existing?.date ?? todayISO()
+  const cards    = await cardRepo.getAll()
+  const accounts = accountRepo ? await accountRepo.getAll() : []
+  const isEdit   = !!existing
+  const today    = existing?.date ?? todayISO()
+  const isPago   = existing?.status === 'pago'
 
   openModal({
     title: isEdit ? 'Editar Transação' : 'Nova Transação',
@@ -42,8 +46,9 @@ export async function openTransactionModal(
         <div>
           <label class="form-label">Status</label>
           <select id="f-status" class="select">
-            <option value="confirmado" ${existing?.status !== 'pendente' ? 'selected' : ''}>Confirmado</option>
-            <option value="pendente"   ${existing?.status === 'pendente' ? 'selected' : ''}>Pendente</option>
+            <option value="confirmado" ${!existing || existing.status === 'confirmado' ? 'selected' : ''}>Confirmado</option>
+            <option value="pendente"   ${existing?.status === 'pendente'   ? 'selected' : ''}>Pendente</option>
+            <option value="pago"       ${existing?.status === 'pago'       ? 'selected' : ''}>Pago</option>
           </select>
         </div>
         <div>
@@ -83,21 +88,51 @@ export async function openTransactionModal(
             class="input" value="1" placeholder="1">
           <div id="f-installments-preview" class="hidden mt-1.5 text-xs font-medium text-primary"></div>
         </div>
+        ${accounts.length > 0 ? `
+        <div id="f-account-wrap">
+          <label class="form-label">Conta Bancária</label>
+          <select id="f-account" class="select">
+            <option value="">— nenhuma —</option>
+            ${accounts.map(a => `<option value="${a.id}" ${a.id === existing?.accountId ? 'selected' : ''}>${a.name}</option>`).join('')}
+          </select>
+        </div>
+        ` : ''}
+        <div id="f-paid-wrap" class="hidden space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input id="f-paid-check" type="checkbox" class="w-4 h-4 accent-primary"
+              ${isPago ? 'checked' : ''}>
+            <span class="text-sm text-muted font-medium">Marcar como Pago</span>
+          </label>
+          <div id="f-payment-date-wrap" class="${isPago ? '' : 'hidden'}">
+            <label class="form-label">Data de Pagamento</label>
+            <input id="f-payment-date" type="date" class="input"
+              value="${existing?.paymentDate ?? todayISO()}">
+          </div>
+        </div>
       </div>
     `,
     confirmLabel: isEdit ? 'Salvar' : 'Adicionar',
     onConfirm: async () => {
-      const body   = getModalBody()!
-      const type   = (body.querySelector('#f-type')   as HTMLSelectElement).value as TransactionType
-      const status = (body.querySelector('#f-status') as HTMLSelectElement).value as TransactionStatus
-      const amount = parseFloat((body.querySelector('#f-amount') as HTMLInputElement).value)
-      const desc   = (body.querySelector('#f-desc')   as HTMLInputElement).value.trim()
-      const cat    = (body.querySelector('#f-cat')    as HTMLSelectElement).value
-      const date   = (body.querySelector('#f-date')   as HTMLInputElement).value
-      const method = (body.querySelector('#f-method') as HTMLSelectElement).value as 'cash' | 'card'
-      const cardId = method === 'card'
+      const body         = getModalBody()!
+      const type         = (body.querySelector('#f-type')   as HTMLSelectElement).value as TransactionType
+      const amount       = parseFloat((body.querySelector('#f-amount') as HTMLInputElement).value)
+      const desc         = (body.querySelector('#f-desc')   as HTMLInputElement).value.trim()
+      const cat          = (body.querySelector('#f-cat')    as HTMLSelectElement).value
+      const date         = (body.querySelector('#f-date')   as HTMLInputElement).value
+      const method       = (body.querySelector('#f-method') as HTMLSelectElement).value as 'cash' | 'card'
+      const cardId       = method === 'card'
         ? (body.querySelector('#f-card') as HTMLSelectElement)?.value
         : undefined
+      const accountId    = (body.querySelector('#f-account') as HTMLSelectElement)?.value || undefined
+
+      // status: o checkbox "Marcar como Pago" sobrepõe o select quando marcado
+      const paidChecked  = (body.querySelector('#f-paid-check') as HTMLInputElement)?.checked ?? false
+      const statusSelect = (body.querySelector('#f-status') as HTMLSelectElement).value as TransactionStatus
+      const status: TransactionStatus = paidChecked ? 'pago' : statusSelect
+      const paymentDate  = paidChecked
+        ? ((body.querySelector('#f-payment-date') as HTMLInputElement)?.value || todayISO())
+        : undefined
+
       const installments = !isEdit && method === 'card'
         ? Math.max(1, parseInt((body.querySelector('#f-installments') as HTMLInputElement)?.value) || 1)
         : 1
@@ -112,7 +147,8 @@ export async function openTransactionModal(
 
       if (isEdit && existing) {
         await updateTransaction(txRepo, existing.id, {
-          type, status, amount, description: desc, category: cat, date, paymentMethod: method, cardId,
+          type, status, amount, description: desc, category: cat, date,
+          paymentMethod: method, cardId, accountId, paymentDate,
         })
         showToast('Transação atualizada', 'success')
       } else if (installments > 1) {
@@ -123,7 +159,8 @@ export async function openTransactionModal(
         showToast(`${installments} parcelas criadas`, 'success')
       } else {
         await addTransaction(txRepo, {
-          type, status, amount, description: desc, category: cat, date, paymentMethod: method, cardId,
+          type, status, amount, description: desc, category: cat, date,
+          paymentMethod: method, cardId, accountId, paymentDate,
         })
         showToast('Transação adicionada', 'success')
       }
@@ -157,26 +194,57 @@ export async function openTransactionModal(
   }
 
   function updatePaymentVisibility() {
-    const rawType       = (body!.querySelector('#f-type')   as HTMLSelectElement).value
-    const method        = (body!.querySelector('#f-method') as HTMLSelectElement).value
-    const methodWrap    = body!.querySelector('#f-method-wrap')     as HTMLElement
-    const cardWrap      = body!.querySelector('#f-card-wrap')       as HTMLElement
-    const installWrap   = body!.querySelector('#f-installments-wrap') as HTMLElement
+    const rawType     = (body!.querySelector('#f-type')   as HTMLSelectElement).value
+    const method      = (body!.querySelector('#f-method') as HTMLSelectElement).value
+    const methodWrap  = body!.querySelector('#f-method-wrap')      as HTMLElement
+    const cardWrap    = body!.querySelector('#f-card-wrap')        as HTMLElement
+    const installWrap = body!.querySelector('#f-installments-wrap') as HTMLElement
+    const paidWrap    = body!.querySelector('#f-paid-wrap')        as HTMLElement
 
     methodWrap.classList.toggle('hidden', rawType === 'income')
-    cardWrap.classList.toggle('hidden', method !== 'card' || rawType === 'income')
+    cardWrap.classList.toggle('hidden',   method !== 'card' || rawType === 'income')
 
-    // Parcelas só disponíveis em novos lançamentos no cartão
-    const showInstallments = !isEdit && method === 'card' && rawType !== 'income'
-    installWrap.classList.toggle('hidden', !showInstallments)
-    if (!showInstallments) {
-      // Reset ao esconder
+    // Parcelas: apenas novos lançamentos no cartão
+    const showInstall = !isEdit && method === 'card' && rawType !== 'income'
+    installWrap.classList.toggle('hidden', !showInstall)
+    if (!showInstall) {
       const input = body!.querySelector('#f-installments') as HTMLInputElement
       if (input) input.value = '1'
-      const preview = body!.querySelector('#f-installments-preview') as HTMLElement
-      if (preview) preview.classList.add('hidden')
+      ;(body!.querySelector('#f-installments-preview') as HTMLElement)?.classList.add('hidden')
     } else {
       updateInstallmentsPreview()
+    }
+
+    // Marcar como Pago: apenas para despesas
+    paidWrap?.classList.toggle('hidden', rawType === 'income')
+  }
+
+  function syncPaidCheckbox() {
+    const checked      = (body!.querySelector('#f-paid-check') as HTMLInputElement)?.checked
+    const statusSelect = body!.querySelector('#f-status') as HTMLSelectElement
+    const dateWrap     = body!.querySelector('#f-payment-date-wrap') as HTMLElement
+
+    if (checked) {
+      statusSelect.value = 'pago'
+      dateWrap?.classList.remove('hidden')
+    } else {
+      if (statusSelect.value === 'pago') statusSelect.value = 'confirmado'
+      dateWrap?.classList.add('hidden')
+    }
+  }
+
+  function syncStatusSelect() {
+    const status      = (body!.querySelector('#f-status') as HTMLSelectElement).value
+    const paidCheck   = body!.querySelector('#f-paid-check') as HTMLInputElement
+    const dateWrap    = body!.querySelector('#f-payment-date-wrap') as HTMLElement
+    if (!paidCheck) return
+
+    if (status === 'pago') {
+      paidCheck.checked = true
+      dateWrap?.classList.remove('hidden')
+    } else {
+      paidCheck.checked = false
+      dateWrap?.classList.add('hidden')
     }
   }
 
@@ -187,6 +255,8 @@ export async function openTransactionModal(
   body.querySelector('#f-method')?.addEventListener('change', updatePaymentVisibility)
   body.querySelector('#f-installments')?.addEventListener('input', updateInstallmentsPreview)
   body.querySelector('#f-amount')?.addEventListener('input', updateInstallmentsPreview)
+  body.querySelector('#f-paid-check')?.addEventListener('change', syncPaidCheckbox)
+  body.querySelector('#f-status')?.addEventListener('change', syncStatusSelect)
 
   await updateCategories()
   updatePaymentVisibility()

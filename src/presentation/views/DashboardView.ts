@@ -1,15 +1,20 @@
 import type { ITransactionRepository } from '../../domain/repositories/ITransactionRepository'
 import type { ICreditCardRepository }  from '../../domain/repositories/ICreditCardRepository'
 import type { ISavingsRepository }      from '../../domain/repositories/ISavingsRepository'
+import type { IAccountRepository }      from '../../domain/repositories/IAccountRepository'
 import {
   computeMonthlySummary,
   computeMonthlyHistory,
   computeCardBill,
+  selectAccountBalance,
 } from '../../domain/services/SummaryService'
+import { addAccount, updateAccount, deleteAccount } from '../../application/use-cases/accounts/ManageAccounts'
 import { EXPENSE_CATEGORIES } from '../../domain/constants/Categories'
 import { formatCurrency, formatMonthYear, getCurrentYearMonth, formatMonthShort } from '../utils/formatters'
 import { renderMonthPicker } from '../components/MonthPicker'
 import { openTransactionModal } from '../components/TransactionModal'
+import { openModal, getModalBody } from '../components/Modal'
+import { showToast } from '../components/Toast'
 import Chart from 'chart.js/auto'
 
 let chartPie: Chart | null = null
@@ -17,9 +22,10 @@ let chartBar: Chart | null = null
 
 export async function renderDashboard(
   container: HTMLElement,
-  txRepo: ITransactionRepository,
-  cardRepo: ICreditCardRepository,
-  savingsRepo: ISavingsRepository
+  txRepo:      ITransactionRepository,
+  cardRepo:    ICreditCardRepository,
+  savingsRepo: ISavingsRepository,
+  accountRepo: IAccountRepository
 ): Promise<void> {
   let { year, month } = getCurrentYearMonth()
 
@@ -30,17 +36,29 @@ export async function renderDashboard(
     const monthTx      = await txRepo.getByMonth(year, month)
     const cards        = await cardRepo.getAll()
     const savings      = await savingsRepo.getAll()
+    const accounts     = await accountRepo.getAll()
 
-    const summary      = computeMonthlySummary(monthTx)
+    const summary      = computeMonthlySummary(monthTx, transactions, year, month)
     const history      = computeMonthlyHistory(transactions, 6)
     const totalSavings = savings.reduce((s, sv) => s + sv.balance, 0)
 
-    // Saldo acumulado real de TODAS as transações confirmadas
-    const allTimeBalance = transactions
-      .filter(t => t.status === 'confirmado' && t.type !== 'transfer')
-      .reduce((sum, t) => sum + (t.type === 'income' ? t.amount : -t.amount), 0)
+    // Patrimônio: saldo de cada conta calculado por event sourcing
+    const accountsWithBalance = accounts.map(a => ({
+      account: a,
+      balance: selectAccountBalance(a, transactions, savings),
+    }))
+    const totalAccountBalance = accountsWithBalance.reduce((s, x) => s + x.balance, 0)
 
-    const patrimonio = allTimeBalance + totalSavings
+    // Fallback para quando não há contas cadastradas: usa saldo histórico de transações confirmadas
+    const allTimeBalance = accounts.length > 0
+      ? totalAccountBalance
+      : transactions
+          .filter(t => (t.status === 'confirmado' || t.status === 'pago') && t.type !== 'transfer')
+          .reduce((sum, t) => sum + (t.type === 'income' ? t.amount : -t.amount), 0)
+
+    const patrimonio = accounts.length > 0
+      ? totalAccountBalance
+      : allTimeBalance + totalSavings
 
     // ── Header ──────────────────────────────────────────────
     const header = document.createElement('div')
@@ -68,34 +86,95 @@ export async function renderDashboard(
     container.appendChild(quickActions)
 
     document.getElementById('btn-quick-income')?.addEventListener('click', () =>
-      openTransactionModal(txRepo, cardRepo, render, { initialType: 'income' })
+      openTransactionModal(txRepo, cardRepo, render, { initialType: 'income' }, accountRepo)
     )
     document.getElementById('btn-quick-expense')?.addEventListener('click', () =>
-      openTransactionModal(txRepo, cardRepo, render, { initialType: 'expense' })
+      openTransactionModal(txRepo, cardRepo, render, { initialType: 'expense' }, accountRepo)
     )
 
-    // ── Cards de saldo ───────────────────────────────────────
+    // ── Bancos ───────────────────────────────────────────────
+    const bankSection = document.createElement('div')
+    bankSection.className = 'mb-4'
+    bankSection.innerHTML = `
+      <div class="flex items-center justify-between mb-2">
+        <div class="section-title mb-0">Minhas Contas</div>
+        <button id="btn-add-account" class="btn-ghost text-xs px-2 py-1">+ Novo banco</button>
+      </div>
+    `
+
+    if (accountsWithBalance.length === 0) {
+      bankSection.innerHTML += `
+        <div class="card-sm text-center text-subtle text-sm py-4">
+          Nenhuma conta cadastrada.<br>
+          <span class="text-xs">Adicione um banco para acompanhar seu saldo por event sourcing.</span>
+        </div>
+      `
+    } else {
+      const bankGrid = document.createElement('div')
+      bankGrid.className = 'space-y-2'
+
+      accountsWithBalance.forEach(({ account, balance }) => {
+        const linkedSav = savings.filter(s => s.accountId === account.id)
+        const savTotal  = linkedSav.reduce((s, sv) => s + sv.balance, 0)
+
+        const row = document.createElement('div')
+        row.className = 'card-sm flex items-center gap-3'
+        row.innerHTML = `
+          <div class="w-9 h-9 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
+               style="background:${account.color}22; border:2px solid ${account.color}">🏦</div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-semibold text-muted">${account.name}</div>
+            ${savTotal > 0 ? `<div class="text-xs text-subtle">Cofrinhos: ${formatCurrency(savTotal)}</div>` : ''}
+          </div>
+          <div class="text-right flex-shrink-0">
+            <div class="text-sm font-bold ${balance >= 0 ? 'text-income' : 'text-expense'}">${formatCurrency(balance)}</div>
+            <div class="flex gap-1 justify-end mt-1">
+              <button class="text-xs text-subtle hover:text-muted px-1" data-edit-acc="${account.id}">✏️</button>
+              <button class="text-xs text-subtle hover:text-danger px-1" data-del-acc="${account.id}">🗑️</button>
+            </div>
+          </div>
+        `
+        bankGrid.appendChild(row)
+
+        row.querySelector(`[data-edit-acc="${account.id}"]`)?.addEventListener('click', () =>
+          openAccountModal(account.id, account.name, account.color, account.initialBalance)
+        )
+        row.querySelector(`[data-del-acc="${account.id}"]`)?.addEventListener('click', () => {
+          openModal({
+            title: `Excluir ${account.name}?`,
+            content: `<p class="text-sm text-subtle">O banco e sua configuração serão removidos. As transações vinculadas não são afetadas.</p>`,
+            danger: true,
+            confirmLabel: 'Excluir',
+            onConfirm: async () => {
+              await deleteAccount(accountRepo, account.id)
+              showToast('Banco removido', 'success')
+              await render()
+            },
+          })
+        })
+      })
+
+      bankSection.appendChild(bankGrid)
+
+      // Total consolidado
+      const totalRow = document.createElement('div')
+      totalRow.className = 'card-sm mt-2 flex justify-between items-center'
+      totalRow.innerHTML = `
+        <span class="text-xs text-subtle">Total consolidado</span>
+        <span class="text-sm font-bold ${patrimonio >= 0 ? 'text-income' : 'text-expense'}">${formatCurrency(patrimonio)}</span>
+      `
+      bankSection.appendChild(totalRow)
+    }
+
+    bankSection.querySelector('#btn-add-account')?.addEventListener('click', () =>
+      openAccountModal()
+    )
+    container.appendChild(bankSection)
+
+    // ── Cards de saldo mensal ────────────────────────────────
     const grid = document.createElement('div')
     grid.className = 'grid grid-cols-2 gap-3 mb-4'
     grid.innerHTML = `
-      <div class="summary-card col-span-2 bg-gradient-to-r from-bg-card to-bg-hover">
-        <div class="summary-label">Patrimônio total</div>
-        <div class="summary-value ${patrimonio >= 0 ? 'text-income' : 'text-expense'}">
-          ${formatCurrency(patrimonio)}
-        </div>
-        <div class="flex gap-4 mt-2 text-xs">
-          <div>
-            <span class="text-subtle">Disponível: </span>
-            <span class="${allTimeBalance >= 0 ? 'text-income' : 'text-expense'} font-medium">
-              ${formatCurrency(allTimeBalance)}
-            </span>
-          </div>
-          <div>
-            <span class="text-subtle">Cofrinhos: </span>
-            <span class="text-primary font-medium">${formatCurrency(totalSavings)}</span>
-          </div>
-        </div>
-      </div>
       <div class="summary-card">
         <div class="summary-label">Entradas (${formatMonthYear(year, month)})</div>
         <div class="summary-value text-income">${formatCurrency(summary.totalIncome)}</div>
@@ -104,15 +183,21 @@ export async function renderDashboard(
         <div class="summary-label">Saídas (${formatMonthYear(year, month)})</div>
         <div class="summary-value text-expense">${formatCurrency(summary.totalExpense)}</div>
       </div>
-      ${summary.pendingCount > 0 ? `
+      ${summary.pendingCount > 0 || summary.openingBalance !== 0 ? `
         <div class="summary-card col-span-2">
           <div class="summary-label">Saldo do mês (confirmado)</div>
           <div class="summary-value ${summary.saldoReal >= 0 ? 'text-income' : 'text-expense'}">
             ${formatCurrency(summary.saldoReal)}
           </div>
-          <div class="text-xs text-subtle mt-1">
-            Projetado: <span class="${summary.saldoProjetado >= 0 ? 'text-income' : 'text-expense'} font-medium">${formatCurrency(summary.saldoProjetado)}</span>
-            <span class="badge-pending ml-1">${summary.pendingCount} pendentes</span>
+          <div class="text-xs text-subtle mt-1 space-y-0.5">
+            ${summary.pendingCount > 0 ? `
+              <div>Projetado: <span class="${summary.saldoProjetado >= 0 ? 'text-income' : 'text-expense'} font-medium">${formatCurrency(summary.saldoProjetado)}</span>
+              <span class="badge-pending ml-1">${summary.pendingCount} pendentes</span></div>
+            ` : ''}
+            ${summary.openingBalance !== 0 ? `
+              <div>Carryover: <span class="text-muted font-medium">${formatCurrency(summary.openingBalance)}</span>
+              → Acumulado: <span class="${summary.saldoAcumulado >= 0 ? 'text-income' : 'text-expense'} font-medium">${formatCurrency(summary.saldoAcumulado)}</span></div>
+            ` : ''}
           </div>
         </div>
       ` : ''}
@@ -222,17 +307,23 @@ export async function renderDashboard(
       container.appendChild(cardSection)
     }
 
-    // ── Cofrinhos resumo ─────────────────────────────────────
-    if (savings.length > 0) {
+    // ── Cofrinhos (sem conta vinculada ou quando não há contas) ─
+    const unlinkedSavings = accounts.length > 0
+      ? savings.filter(s => !s.accountId)
+      : savings
+
+    if (unlinkedSavings.length > 0) {
       const savSection = document.createElement('div')
       savSection.className = 'mb-4'
+      const sectionTitle = accounts.length > 0 ? 'Cofrinhos sem conta' : 'Cofrinhos / Poupança'
+      const sectionTotal = unlinkedSavings.reduce((s, sv) => s + sv.balance, 0)
       savSection.innerHTML = `
-        <div class="section-title">Cofrinhos / Poupança</div>
+        <div class="section-title">${sectionTitle}</div>
         <div class="card-sm">
           <div class="text-subtle text-xs mb-2">Total guardado</div>
-          <div class="text-2xl font-bold text-primary">${formatCurrency(totalSavings)}</div>
+          <div class="text-2xl font-bold text-primary">${formatCurrency(sectionTotal)}</div>
           <div class="divider"></div>
-          ${savings.map(s => `
+          ${unlinkedSavings.map(s => `
             <div class="flex justify-between items-center py-1.5">
               <div class="flex items-center gap-2">
                 <div class="w-2 h-2 rounded-full" style="background:${s.color}"></div>
@@ -245,6 +336,57 @@ export async function renderDashboard(
       `
       container.appendChild(savSection)
     }
+  }
+
+  // ── Modal de banco ───────────────────────────────────────
+  function openAccountModal(
+    editId?: string,
+    editName?: string,
+    editColor?: string,
+    editInitial?: number
+  ) {
+    const isEditAcc = !!editId
+    openModal({
+      title: isEditAcc ? 'Editar Banco' : 'Novo Banco',
+      content: `
+        <div class="space-y-3">
+          <div>
+            <label class="form-label">Nome</label>
+            <input id="acc-name" type="text" class="input"
+              value="${editName ?? ''}" placeholder="Ex: Nubank, Itaú">
+          </div>
+          <div>
+            <label class="form-label">Saldo Inicial (R$)</label>
+            <input id="acc-initial" type="number" step="0.01" class="input"
+              value="${editInitial ?? 0}" placeholder="0,00">
+            <p class="text-xs text-subtle mt-1">Saldo da conta no momento do cadastro. O saldo atual será calculado automaticamente somando as transações.</p>
+          </div>
+          <div>
+            <label class="form-label">Cor</label>
+            <input id="acc-color" type="color" class="input h-10 cursor-pointer"
+              value="${editColor ?? '#3B82F6'}">
+          </div>
+        </div>
+      `,
+      confirmLabel: isEditAcc ? 'Salvar' : 'Criar',
+      onConfirm: async () => {
+        const body    = getModalBody()!
+        const name    = (body.querySelector('#acc-name')    as HTMLInputElement).value.trim()
+        const initial = parseFloat((body.querySelector('#acc-initial') as HTMLInputElement).value) || 0
+        const color   = (body.querySelector('#acc-color')   as HTMLInputElement).value
+
+        if (!name) { showToast('Informe o nome do banco', 'error'); return false }
+
+        if (isEditAcc) {
+          await updateAccount(accountRepo, editId!, { name, color, initialBalance: initial })
+          showToast('Banco atualizado', 'success')
+        } else {
+          await addAccount(accountRepo, { name, initialBalance: initial, color })
+          showToast('Banco criado', 'success')
+        }
+        await render()
+      },
+    })
   }
 
   await render()
