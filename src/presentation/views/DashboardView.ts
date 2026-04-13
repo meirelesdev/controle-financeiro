@@ -8,13 +8,11 @@ import {
   computeCardBill,
   selectAccountBalance,
 } from '../../domain/services/SummaryService'
-import { addAccount, updateAccount, deleteAccount } from '../../application/use-cases/accounts/ManageAccounts'
 import { EXPENSE_CATEGORIES } from '../../domain/constants/Categories'
 import { formatCurrency, formatMonthYear, getCurrentYearMonth, formatMonthShort } from '../utils/formatters'
 import { renderMonthPicker } from '../components/MonthPicker'
 import { openTransactionModal } from '../components/TransactionModal'
-import { openModal, getModalBody } from '../components/Modal'
-import { showToast } from '../components/Toast'
+import { navigate } from '../router'
 import Chart from 'chart.js/auto'
 
 let chartPie: Chart | null = null
@@ -98,15 +96,17 @@ export async function renderDashboard(
     bankSection.innerHTML = `
       <div class="flex items-center justify-between mb-2">
         <div class="section-title mb-0">Minhas Contas</div>
-        <button id="btn-add-account" class="btn-ghost text-xs px-2 py-1">+ Novo banco</button>
+        <button id="btn-manage-accounts" class="btn-ghost text-xs px-2 py-1">Gerenciar →</button>
       </div>
     `
 
     if (accountsWithBalance.length === 0) {
       bankSection.innerHTML += `
-        <div class="card-sm text-center text-subtle text-sm py-4">
-          Nenhuma conta cadastrada.<br>
-          <span class="text-xs">Adicione um banco para acompanhar seu saldo por event sourcing.</span>
+        <div class="card-sm text-center py-4 space-y-2">
+          <p class="text-sm text-subtle">Nenhum banco cadastrado ainda.</p>
+          <button id="btn-setup-accounts" class="btn-primary text-sm px-4 py-2">
+            🏦 Configurar bancos
+          </button>
         </div>
       `
     } else {
@@ -128,35 +128,13 @@ export async function renderDashboard(
           </div>
           <div class="text-right flex-shrink-0">
             <div class="text-sm font-bold ${balance >= 0 ? 'text-income' : 'text-expense'}">${formatCurrency(balance)}</div>
-            <div class="flex gap-1 justify-end mt-1">
-              <button class="text-xs text-subtle hover:text-muted px-1" data-edit-acc="${account.id}">✏️</button>
-              <button class="text-xs text-subtle hover:text-danger px-1" data-del-acc="${account.id}">🗑️</button>
-            </div>
           </div>
         `
         bankGrid.appendChild(row)
-
-        row.querySelector(`[data-edit-acc="${account.id}"]`)?.addEventListener('click', () =>
-          openAccountModal(account.id, account.name, account.color, account.initialBalance)
-        )
-        row.querySelector(`[data-del-acc="${account.id}"]`)?.addEventListener('click', () => {
-          openModal({
-            title: `Excluir ${account.name}?`,
-            content: `<p class="text-sm text-subtle">O banco e sua configuração serão removidos. As transações vinculadas não são afetadas.</p>`,
-            danger: true,
-            confirmLabel: 'Excluir',
-            onConfirm: async () => {
-              await deleteAccount(accountRepo, account.id)
-              showToast('Banco removido', 'success')
-              await render()
-            },
-          })
-        })
       })
 
       bankSection.appendChild(bankGrid)
 
-      // Total consolidado
       const totalRow = document.createElement('div')
       totalRow.className = 'card-sm mt-2 flex justify-between items-center'
       totalRow.innerHTML = `
@@ -166,9 +144,8 @@ export async function renderDashboard(
       bankSection.appendChild(totalRow)
     }
 
-    bankSection.querySelector('#btn-add-account')?.addEventListener('click', () =>
-      openAccountModal()
-    )
+    bankSection.querySelector('#btn-manage-accounts')?.addEventListener('click', () => navigate('accounts'))
+    bankSection.querySelector('#btn-setup-accounts')?.addEventListener('click',  () => navigate('accounts'))
     container.appendChild(bankSection)
 
     // ── Cards de saldo mensal ────────────────────────────────
@@ -336,57 +313,6 @@ export async function renderDashboard(
       `
       container.appendChild(savSection)
     }
-  }
-
-  // ── Modal de banco ───────────────────────────────────────
-  function openAccountModal(
-    editId?: string,
-    editName?: string,
-    editColor?: string,
-    editInitial?: number
-  ) {
-    const isEditAcc = !!editId
-    openModal({
-      title: isEditAcc ? 'Editar Banco' : 'Novo Banco',
-      content: `
-        <div class="space-y-3">
-          <div>
-            <label class="form-label">Nome</label>
-            <input id="acc-name" type="text" class="input"
-              value="${editName ?? ''}" placeholder="Ex: Nubank, Itaú">
-          </div>
-          <div>
-            <label class="form-label">Saldo Inicial (R$)</label>
-            <input id="acc-initial" type="number" step="0.01" class="input"
-              value="${editInitial ?? 0}" placeholder="0,00">
-            <p class="text-xs text-subtle mt-1">Saldo da conta no momento do cadastro. O saldo atual será calculado automaticamente somando as transações.</p>
-          </div>
-          <div>
-            <label class="form-label">Cor</label>
-            <input id="acc-color" type="color" class="input h-10 cursor-pointer"
-              value="${editColor ?? '#3B82F6'}">
-          </div>
-        </div>
-      `,
-      confirmLabel: isEditAcc ? 'Salvar' : 'Criar',
-      onConfirm: async () => {
-        const body    = getModalBody()!
-        const name    = (body.querySelector('#acc-name')    as HTMLInputElement).value.trim()
-        const initial = parseFloat((body.querySelector('#acc-initial') as HTMLInputElement).value) || 0
-        const color   = (body.querySelector('#acc-color')   as HTMLInputElement).value
-
-        if (!name) { showToast('Informe o nome do banco', 'error'); return false }
-
-        if (isEditAcc) {
-          await updateAccount(accountRepo, editId!, { name, color, initialBalance: initial })
-          showToast('Banco atualizado', 'success')
-        } else {
-          await addAccount(accountRepo, { name, initialBalance: initial, color })
-          showToast('Banco criado', 'success')
-        }
-        await render()
-      },
-    })
   }
 
   await render()

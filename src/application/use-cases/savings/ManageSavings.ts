@@ -7,7 +7,7 @@ const SAVINGS_COLORS = ['#10B981','#3B82F6','#F59E0B','#8B5CF6','#EC4899','#EF44
 
 export async function addSavings(
   repo: ISavingsRepository,
-  input: { name: string; balance?: number; type: SavingsType; color?: string }
+  input: { name: string; balance?: number; type: SavingsType; color?: string; accountId?: string }
 ): Promise<Savings> {
   const all = await repo.getAll()
   const savings: Savings = {
@@ -16,6 +16,7 @@ export async function addSavings(
     balance:   input.balance ?? 0,
     type:      input.type,
     color:     input.color ?? SAVINGS_COLORS[all.length % SAVINGS_COLORS.length],
+    accountId: input.accountId,
     updatedAt: new Date().toISOString(),
   }
   await repo.add(savings)

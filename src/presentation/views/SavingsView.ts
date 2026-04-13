@@ -1,6 +1,8 @@
 import type { ISavingsRepository }      from '../../domain/repositories/ISavingsRepository'
 import type { ITransactionRepository } from '../../domain/repositories/ITransactionRepository'
-import type { Savings } from '../../domain/entities/Savings'
+import type { IAccountRepository }     from '../../domain/repositories/IAccountRepository'
+import type { Savings }  from '../../domain/entities/Savings'
+import type { Account }  from '../../domain/entities/Account'
 import {
   addSavings,
   deleteSavings,
@@ -20,12 +22,16 @@ const TYPE_LABELS: Record<string, string> = {
 
 export async function renderSavings(
   container: HTMLElement,
-  savingsRepo: ISavingsRepository,
-  txRepo: ITransactionRepository
+  savingsRepo:  ISavingsRepository,
+  txRepo:       ITransactionRepository,
+  accountRepo?: IAccountRepository
 ): Promise<void> {
+  let accounts: Account[] = []
+
   async function render() {
     container.innerHTML = ''
-    const all = await savingsRepo.getAll()
+    const all   = await savingsRepo.getAll()
+    accounts    = accountRepo ? await accountRepo.getAll() : []
     const total = all.reduce((s, v) => s + v.balance, 0)
 
     // Header
@@ -93,13 +99,23 @@ export async function renderSavings(
   }
 
   function openAddModal() {
+    const accountOptions = accounts.length > 0
+      ? `<div>
+           <label class="form-label">Banco de origem</label>
+           <select id="s-account" class="select">
+             <option value="">— nenhum —</option>
+             ${accounts.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+           </select>
+         </div>`
+      : ''
+
     openModal({
       title: 'Novo Cofrinho',
       content: `
         <div class="space-y-3">
           <div>
-            <label class="form-label">Nome</label>
-            <input id="s-name" type="text" class="input" placeholder="Ex: Nubank, Reserva emergência">
+            <label class="form-label">Nome *</label>
+            <input id="s-name" type="text" class="input" placeholder="Ex: Reserva emergência, Viagem">
           </div>
           <div>
             <label class="form-label">Tipo</label>
@@ -113,19 +129,21 @@ export async function renderSavings(
             <label class="form-label">Saldo inicial (R$)</label>
             <input id="s-balance" type="number" min="0" step="0.01" class="input" value="0" placeholder="0,00">
           </div>
+          ${accountOptions}
         </div>
       `,
       confirmLabel: 'Criar',
       onConfirm: async () => {
-        const body    = getModalBody()!
-        const name    = (body.querySelector('#s-name')    as HTMLInputElement).value.trim()
-        const type    = (body.querySelector('#s-type')    as HTMLSelectElement).value as 'bank' | 'digital' | 'piggybank'
-        const balance = parseFloat((body.querySelector('#s-balance') as HTMLInputElement).value) || 0
+        const body      = getModalBody()!
+        const name      = (body.querySelector('#s-name')    as HTMLInputElement).value.trim()
+        const type      = (body.querySelector('#s-type')    as HTMLSelectElement).value as 'bank' | 'digital' | 'piggybank'
+        const balance   = parseFloat((body.querySelector('#s-balance') as HTMLInputElement).value) || 0
+        const accountId = (body.querySelector('#s-account') as HTMLSelectElement)?.value || undefined
 
         const err = validateName(name)
-        if (err) { showToast(err, 'error'); return }
+        if (err) { showToast(err, 'error'); return false }
 
-        await addSavings(savingsRepo, { name, type, balance })
+        await addSavings(savingsRepo, { name, type, balance, accountId })
         showToast('Cofrinho criado', 'success')
         await render()
       },

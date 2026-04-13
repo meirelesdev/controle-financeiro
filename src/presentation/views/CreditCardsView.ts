@@ -1,6 +1,8 @@
 import type { ICreditCardRepository }  from '../../domain/repositories/ICreditCardRepository'
 import type { ITransactionRepository } from '../../domain/repositories/ITransactionRepository'
+import type { IAccountRepository }     from '../../domain/repositories/IAccountRepository'
 import type { CreditCard } from '../../domain/entities/CreditCard'
+import type { Account }    from '../../domain/entities/Account'
 import { addCreditCard, updateCreditCard, deleteCreditCard } from '../../application/use-cases/cards/ManageCreditCard'
 import { computeCardBill, getBestPurchaseDay } from '../../domain/services/SummaryService'
 import { renderMonthPicker } from '../components/MonthPicker'
@@ -13,16 +15,19 @@ import { validateName, validateDay } from '../utils/validators'
 
 export async function renderCreditCards(
   container: HTMLElement,
-  cardRepo: ICreditCardRepository,
-  txRepo: ITransactionRepository
+  cardRepo:    ICreditCardRepository,
+  txRepo:      ITransactionRepository,
+  accountRepo?: IAccountRepository
 ): Promise<void> {
   let { year, month } = getCurrentYearMonth()
+  let accounts: Account[] = []
 
   async function render() {
     container.innerHTML = ''
 
     const cards        = await cardRepo.getAll()
     const transactions = await txRepo.getAll()
+    accounts           = accountRepo ? await accountRepo.getAll() : []
 
     const header = document.createElement('div')
     header.className = 'flex items-center justify-between mb-4'
@@ -141,12 +146,22 @@ export async function renderCreditCards(
   }
 
   function openCardModal(existing?: CreditCard) {
+    const accountOptions = accounts.length > 0
+      ? `<div>
+           <label class="form-label">Banco de origem</label>
+           <select id="c-account" class="select">
+             <option value="">— nenhum —</option>
+             ${accounts.map(a => `<option value="${a.id}" ${a.id === existing?.accountId ? 'selected' : ''}>${a.name}</option>`).join('')}
+           </select>
+         </div>`
+      : ''
+
     openModal({
       title: existing ? 'Editar Cartão' : 'Novo Cartão',
       content: `
         <div class="space-y-3">
           <div>
-            <label class="form-label">Nome do cartão</label>
+            <label class="form-label">Nome do cartão *</label>
             <input id="c-name" type="text" class="input" value="${existing?.name ?? ''}" placeholder="Ex: Nubank">
           </div>
           <div>
@@ -163,28 +178,30 @@ export async function renderCreditCards(
               <input id="c-due" type="number" min="1" max="28" class="input" value="${existing?.dueDay ?? ''}" placeholder="10">
             </div>
           </div>
+          ${accountOptions}
         </div>
       `,
       confirmLabel: existing ? 'Salvar' : 'Adicionar',
       onConfirm: async () => {
-        const body = getModalBody()!
-        const name    = (body.querySelector('#c-name')    as HTMLInputElement).value.trim()
-        const limit   = parseFloat((body.querySelector('#c-limit')   as HTMLInputElement).value)
-        const closing = parseInt((body.querySelector('#c-closing') as HTMLInputElement).value)
-        const due     = parseInt((body.querySelector('#c-due')     as HTMLInputElement).value)
+        const body      = getModalBody()!
+        const name      = (body.querySelector('#c-name')    as HTMLInputElement).value.trim()
+        const limit     = parseFloat((body.querySelector('#c-limit')   as HTMLInputElement).value)
+        const closing   = parseInt((body.querySelector('#c-closing') as HTMLInputElement).value)
+        const due       = parseInt((body.querySelector('#c-due')     as HTMLInputElement).value)
+        const accountId = (body.querySelector('#c-account') as HTMLSelectElement)?.value || undefined
 
         const nameErr = validateName(name)
         const clErr   = validateDay(closing)
         const dueErr  = validateDay(due)
         if (nameErr || clErr || dueErr) {
-          showToast(nameErr ?? clErr ?? dueErr ?? 'Erro', 'error'); return
+          showToast(nameErr ?? clErr ?? dueErr ?? 'Erro', 'error'); return false
         }
 
         if (existing) {
-          await updateCreditCard(cardRepo, existing.id, { name, limit: limit || 0, closingDay: closing, dueDay: due })
+          await updateCreditCard(cardRepo, existing.id, { name, limit: limit || 0, closingDay: closing, dueDay: due, accountId })
           showToast('Cartão atualizado', 'success')
         } else {
-          await addCreditCard(cardRepo, { name, limit: limit || 0, closingDay: closing, dueDay: due })
+          await addCreditCard(cardRepo, { name, limit: limit || 0, closingDay: closing, dueDay: due, accountId })
           showToast('Cartão adicionado', 'success')
         }
         await render()

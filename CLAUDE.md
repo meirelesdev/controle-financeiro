@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Engineering Rules
+
+Before implementing any feature or change, consult the rule files in `.clauderules/`:
+
+| File | What it governs |
+|------|----------------|
+| [`.claude/rules/architecture.md`](.claude/rules/architecture.md) | Layer boundaries, DI bootstrap, what belongs where |
+| [`.claude/rules/state-management.md`](.claude/rules/state-management.md) | Derived balance (no stored balances), ledger immutability, selector pattern |
+| [`.claude/rules/coding-standards.md`](.claude/rules/coding-standards.md) | TypeScript conventions, async/await, financial rounding, security, naming |
+| [`.claude/rules/ui-ux-guidelines.md`](.claude/rules/ui-ux-guidelines.md) | Tailwind tokens, Mobile-First, PWA/SW, WCAG contrast, DOM rendering model |
+
 ## Commands
 
 ```bash

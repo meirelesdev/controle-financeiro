@@ -10,6 +10,7 @@ import { renderDashboard }    from './presentation/views/DashboardView'
 import { renderTransactions } from './presentation/views/TransactionsView'
 import { renderCreditCards }  from './presentation/views/CreditCardsView'
 import { renderSavings }      from './presentation/views/SavingsView'
+import { renderAccounts }     from './presentation/views/AccountsView'
 import { renderImport }       from './presentation/views/ImportView'
 import { renderSettings }     from './presentation/views/SettingsView'
 
@@ -37,8 +38,9 @@ async function bootstrap() {
   // Registrar rotas
   registerRoute('dashboard',    (el) => renderDashboard(el, txRepo, cardRepo, savingsRepo, accountRepo))
   registerRoute('transactions', (el) => renderTransactions(el, txRepo, cardRepo))
-  registerRoute('cards',        (el) => renderCreditCards(el, cardRepo, txRepo))
-  registerRoute('savings',      (el) => renderSavings(el, savingsRepo, txRepo))
+  registerRoute('cards',        (el) => renderCreditCards(el, cardRepo, txRepo, accountRepo))
+  registerRoute('savings',      (el) => renderSavings(el, savingsRepo, txRepo, accountRepo))
+  registerRoute('accounts',     (el) => renderAccounts(el, accountRepo, txRepo, cardRepo, savingsRepo))
   registerRoute('import',       (el) => renderImport(el, txRepo))
   registerRoute('settings',     (el) => renderSettings(el))
 
